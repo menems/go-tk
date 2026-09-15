@@ -41,9 +41,16 @@ func main() {
 ```
 
 An engine is anything that occupies a goroutine until told to stop: an HTTP
-server, a gRPC server, a consumer, a scheduler. `Run` blocks until all of them
-have returned, and the **first** return, error or not, cancels the context the
-others were given. It reports every error joined, in name order.
+server, a gRPC server, a consumer, a scheduler.
+
+The ordinary way down is SIGTERM: `signal.NotifyContext` cancels the context,
+every engine sees it at once, and `Run` returns when the last one has drained.
+It reports every error joined, in name order.
+
+The other way down is an engine returning by itself, which cancels the rest.
+So every engine must be long-running: a one-shot task, a migration or a warm-up
+runs before `Run`, never as an engine, because its clean return would take the
+process with it.
 
 `StartStop(start, stop)` adapts an engine written before `context.Context`,
 where a blocking `Serve` is ended by a separate `GracefulStop`. `stop` must

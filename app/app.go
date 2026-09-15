@@ -2,13 +2,18 @@
 // them together.
 //
 // An engine is anything that occupies a goroutine until it is told to stop: an
-// HTTP server, a gRPC server, a queue consumer, a scheduler. The first one to
-// return, for any reason, stops the others; Run waits for all of them and
-// reports every error it collected.
+// HTTP server, a gRPC server, a queue consumer, a scheduler.
 //
-// Signals stay the caller's: main derives the context from
-// signal.NotifyContext, so an App started from a test or under another process
-// manager does not fight for SIGTERM.
+// The ordinary way down is SIGTERM: main derives its context from
+// signal.NotifyContext, every engine sees the cancellation at once and Run
+// returns when the last of them has drained. Signals stay in main so an App
+// started from a test, or under another process manager, does not fight for
+// SIGTERM.
+//
+// The other way down is an engine returning by itself, which cancels the rest.
+// So every engine here must be long-running: a one-shot task, a migration or a
+// warm-up runs before Run, never as an engine, because its clean return would
+// take the process with it.
 package app
 
 import (

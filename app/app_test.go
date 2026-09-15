@@ -84,14 +84,16 @@ func TestRunFailingEngineStopsTheOthers(t *testing.T) {
 }
 
 // TestRunCleanExitStopsTheOthers pins the half errgroup would miss: an engine
-// returning nil on its own also brings the process down.
+// that returns nil without being cancelled still brings the process down,
+// rather than leaving a pod that passes its liveness probe and serves nothing.
+// It is also why a one-shot task cannot be an engine.
 func TestRunCleanExitStopsTheOthers(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
 	err := run(t, context.Background(), map[string]app.Engine{
-		"http":   serving(started),
-		"oneoff": app.EngineFunc(func(context.Context) error { return nil }),
+		"http": serving(started),
+		"grpc": app.EngineFunc(func(context.Context) error { return nil }),
 	})
 
 	if err != nil {
