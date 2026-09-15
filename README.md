@@ -136,6 +136,41 @@ It answers `200 {"status":"ok"}`, or `503 {"status":"unavailable","failed":
 (`WithLogger`), never to the response body: a probe endpoint is usually
 reachable by more callers than the operator expects.
 
+## config
+
+Reads configuration from an environment at boot, collecting every problem
+before it reports.
+
+```go
+func Load(getenv func(string) string) (Config, error) {
+    env := config.New(getenv)
+    cfg := Config{
+        DatabaseURL: env.Required("DATABASE_URL"),
+        Addr:        env.String("HTTP_ADDR", ":8080"),
+        MaxConns:    env.Int("DB_MAX_CONNS", 10),
+        Timeout:     env.Duration("REQUEST_TIMEOUT", 5*time.Second),
+    }
+    return cfg, env.Err()
+}
+```
+
+The `Config` struct stays in the service, with its fields, its names and its
+defaults. What the package owns is the reading.
+
+`Err` reports every problem joined, so an operator fixing a deployment sees
+three missing values at once instead of one per deploy.
+
+`getenv` is a parameter, not a call to `os.Getenv`: pass `os.Getenv` in main
+and a map's lookup in a test, and the test needs no process environment and
+runs in parallel.
+
+Error messages name the key and never the value, because a malformed
+`DATABASE_URL` carries a password and a boot error gets logged.
+
+Only a string can be `Required`. The values with no sensible default are DSNs,
+endpoints and secrets; a port or a timeout that reaches production unset wants
+a default, not a boot failure.
+
 ## pg
 
 Opens a `*pgxpool.Pool` from a DSN. No wrapper type, no ping: pgxpool connects
