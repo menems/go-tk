@@ -34,7 +34,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.39.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -136,9 +136,14 @@ func newResource(cfg Config) (*resource.Resource, error) {
 		attrs = append(attrs, semconv.ServiceVersion(cfg.ServiceVersion))
 	}
 
+	// Schemaless on purpose. Merging two resources that each carry a
+	// different non-empty schema URL is an error, so pinning our semconv
+	// version against resource.Default()'s would break on every SDK bump
+	// that moves it. The attribute keys are the same either way, and the
+	// merged resource keeps the SDK's own schema URL.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(semconv.SchemaURL, attrs...),
+		resource.NewSchemaless(attrs...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: resource: %w", err)

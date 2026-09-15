@@ -12,23 +12,33 @@ make check
 
 ## Dependencies
 
-| package | outside the stdlib |
-|---|---|
-| `app`, `httpd`, `health`, `authctx`, `config` | none |
-| `pg` | pgx |
-| `telemetry` | OpenTelemetry, Prometheus |
+Three modules, one per dependency set, so importing one package cannot drag
+another's dependencies into your module graph.
 
-One module, and importing one package pulls only what that package needs. A
-service importing `got-tk/httpd` alone gets an empty indirect block in its
-`go.mod` and an 8.9 MB binary; the same service importing `got-tk/telemetry`
-gets 31 indirect requirements and 22 MB. Nothing unimported is downloaded,
-compiled or linked.
+| module | packages | outside the stdlib |
+|---|---|---|
+| `github.com/menems/got-tk` | `app`, `httpd`, `health`, `authctx`, `config` | none |
+| `github.com/menems/got-tk/pg` | `pg` | pgx |
+| `github.com/menems/got-tk/telemetry` | `telemetry` | OpenTelemetry, Prometheus |
 
-What one module does cost is a version floor: `go list -m all` selects this
-repo's otel and pgx versions even where nothing imports them, so a service
-already on an older otel is pushed up to ours. Splitting `telemetry` into its
-own module would lift that, at the price of a second `go.mod` and its own
-`telemetry/vX.Y.Z` tags. Not worth it until a dependency has to differ.
+```
+go get github.com/menems/got-tk            # app, httpd, health, authctx, config
+go get github.com/menems/got-tk/pg         # adds pgx, and nothing else
+go get github.com/menems/got-tk/telemetry  # adds OpenTelemetry and Prometheus
+```
+
+Import paths do not change: `got-tk/pg` is both the package path and its
+module path.
+
+Measured on a service importing `got-tk/httpd` alone: `go list -m all` reports
+2 modules, itself and the toolkit, and no `go.sum` is written at all. As a
+single module it reported 39, otel, Prometheus and pgx among them, which is
+what a vulnerability scanner reads even though none of it was ever compiled.
+
+What the split costs is releases: each module carries its own tag, `v0.1.0`,
+`pg/v0.1.0`, `telemetry/v0.1.0`. `go.work` is committed so an edit across
+modules resolves locally without publishing anything, and `make check` runs
+each module in turn.
 
 ## app
 
