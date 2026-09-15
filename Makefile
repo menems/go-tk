@@ -42,3 +42,13 @@ tidy: ## sync every go.mod and go.sum
 
 .PHONY: check
 check: fmt-check vet race ## everything CI runs
+
+.PHONY: tag
+tag: check ## tag every module at VERSION, e.g. make tag VERSION=v0.2.0
+	@test -n "$(VERSION)" || { echo "set VERSION, e.g. make tag VERSION=v0.2.0"; exit 2; }
+	@scripts/tag.sh "$(VERSION)"
+
+.PHONY: release
+release: check ## tag every module at VERSION and push the tags
+	@test -n "$(VERSION)" || { echo "set VERSION, e.g. make release VERSION=v0.2.0"; exit 2; }
+	@scripts/tag.sh "$(VERSION)" --push
