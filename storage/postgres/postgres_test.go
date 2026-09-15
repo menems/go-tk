@@ -1,10 +1,10 @@
-package pg_test
+package postgres_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/menems/got-tk/pg"
+	"github.com/menems/got-tk/storage/postgres"
 )
 
 // validDSN points at a port nothing listens on. pgxpool connects lazily, so
@@ -14,7 +14,7 @@ const validDSN = "postgres://user:pass@127.0.0.1:1/testdb?sslmode=disable"
 func TestNewInvalidDSN(t *testing.T) {
 	t.Parallel()
 
-	if _, err := pg.New(context.Background(), "://not-a-dsn"); err == nil {
+	if _, err := postgres.New(context.Background(), "://not-a-dsn"); err == nil {
 		t.Fatal("expected an error for a malformed DSN, got nil")
 	}
 }
@@ -25,29 +25,29 @@ func TestNewMaxConns(t *testing.T) {
 	tests := []struct {
 		name string
 		dsn  string
-		opts []pg.Option
+		opts []postgres.Option
 		want int32
 	}{
 		{
 			name: "default applies",
 			dsn:  validDSN,
-			want: pg.DefaultMaxConns,
+			want: postgres.DefaultMaxConns,
 		},
 		{
 			name: "option overrides the default",
 			dsn:  validDSN,
-			opts: []pg.Option{pg.WithMaxConns(25)},
+			opts: []postgres.Option{postgres.WithMaxConns(25)},
 			want: 25,
 		},
 		{
 			name: "DSN pool_max_conns loses to the default",
 			dsn:  validDSN + "&pool_max_conns=3",
-			want: pg.DefaultMaxConns,
+			want: postgres.DefaultMaxConns,
 		},
 		{
 			name: "DSN pool_max_conns loses to the option",
 			dsn:  validDSN + "&pool_max_conns=3",
-			opts: []pg.Option{pg.WithMaxConns(7)},
+			opts: []postgres.Option{postgres.WithMaxConns(7)},
 			want: 7,
 		},
 	}
@@ -56,7 +56,7 @@ func TestNewMaxConns(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			pool, err := pg.New(context.Background(), tt.dsn, tt.opts...)
+			pool, err := postgres.New(context.Background(), tt.dsn, tt.opts...)
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}

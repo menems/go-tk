@@ -5,38 +5,59 @@ Go toolkit. Bricks that every service here rewrote, extracted once.
 Transport-agnostic on purpose: nothing imports chi or ConnectRPC. A package
 hands back stdlib types, and each service writes its own five-line adapter.
 
+## Layout
+
 ```
-go get github.com/menems/got-tk
-make check
+app/                     supervise several runners under one context
+transport/http/          run an http.Handler with timeouts and a graceful stop
+authctx/                 read the bearer, carry the principal
+health/                  liveness and readiness probes
+config/                  read configuration at boot
+storage/postgres/        a pgxpool.Pool from a DSN
+telemetry/otel/          OpenTelemetry providers
+telemetry/prometheus/    let Prometheus scrape them
 ```
+
+A directory groups siblings, present or planned: `storage/mysql` and
+`transport/grpc` land next to their peers without moving anything.
+
+Package names match their directory, with one exception: `transport/http` is
+`package httpd`, because `package http` would shadow `net/http` in every
+consumer that uses both, which is all of them. `telemetry/otel` and
+`telemetry/prometheus` do shadow their upstream namesakes, so a `main` that
+needs both aliases one.
 
 ## Dependencies
 
-Three modules, one per dependency set, so importing one package cannot drag
+Four modules, one per dependency set, so importing one package cannot drag
 another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/got-tk` | `app`, `httpd`, `health`, `authctx`, `config` | none |
-| `github.com/menems/got-tk/pg` | `pg` | pgx |
-| `github.com/menems/got-tk/telemetry` | `telemetry` | OpenTelemetry, Prometheus |
+| `github.com/menems/got-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
+| `github.com/menems/got-tk/storage/postgres` | `storage/postgres` | pgx |
+| `github.com/menems/got-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
+| `github.com/menems/got-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/got-tk            # app, httpd, health, authctx, config
-go get github.com/menems/got-tk/pg         # adds pgx, and nothing else
-go get github.com/menems/got-tk/telemetry  # adds OpenTelemetry and Prometheus
+go get github.com/menems/got-tk                        # app, transport/http, authctx, health, config
+go get github.com/menems/got-tk/storage/postgres       # adds pgx, and nothing else
+go get github.com/menems/got-tk/telemetry/otel         # adds OpenTelemetry
+go get github.com/menems/got-tk/telemetry/prometheus   # adds Prometheus
 ```
 
-Import paths do not change: `got-tk/pg` is both the package path and its
-module path.
+Import paths are the module paths, so nothing in your code changes when a
+package moves module.
 
-Measured on a service importing `got-tk/httpd` alone: `go list -m all` reports
-2 modules, itself and the toolkit, and no `go.sum` is written at all. As a
-single module it reported 39, otel, Prometheus and pgx among them, which is
-what a vulnerability scanner reads even though none of it was ever compiled.
+Measured on a service importing `got-tk/transport/http` alone: `go list -m all`
+reports 2 modules, itself and the toolkit, and no `go.sum` is written at all.
+As a single module it reported 39, otel, Prometheus and pgx among them, which
+is what a vulnerability scanner reads even though none of it was ever
+compiled.
 
-What the split costs is releases: each module carries its own tag, `v0.1.0`,
-`pg/v0.1.0`, `telemetry/v0.1.0`. `go.work` is committed so an edit across
+No module here requires another, so taking one never pulls a second. What the
+split costs is releases: each module carries its own tag, `v0.1.0`,
+`storage/postgres/v0.1.0`, and so on. `go.work` is committed so an edit across
 modules resolves locally without publishing anything, and `make check` runs
 each module in turn.
 
@@ -50,7 +71,7 @@ func main() {
     ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
 
-    pool, err := pg.New(ctx, cfg.DatabaseURL)
+    pool, err := postgres.New(ctx, cfg.DatabaseURL)
     ...
 
     mux := http.NewServeMux()
@@ -78,9 +99,9 @@ every runner sees it at once, and `Run` returns when the last one has drained.
 It reports every error joined, in name order.
 
 The other way down is a runner returning by itself, which cancels the rest.
-So every runner must be long-running: a one-shot task, a migration or a warm-up
-runs before `Run`, never as a runner, because its clean return would take the
-process with it.
+So every runner must be long-running: a one-shot task, a migration or a
+warm-up runs before `Run`, never as a runner, because its clean return would
+take the process with it.
 
 `*App` is itself a `Runner`, so a subsystem with its own runners mounts as one
 entry of the group above it.
@@ -93,7 +114,7 @@ Signals stay in `main`. A container that grabs SIGTERM behind the caller's back
 fights whoever else wants it: a test, a parent process manager, an embedding
 binary.
 
-## httpd
+## transport/http
 
 Runs an `http.Handler` with bounded timeouts and a graceful shutdown driven by
 a context.
@@ -201,17 +222,32 @@ Only a string can be `Required`. The values with no sensible default are DSNs,
 endpoints and secrets; a port or a timeout that reaches production unset wants
 a default, not a boot failure.
 
-## telemetry
+## storage/postgres
+
+Opens a `*pgxpool.Pool` from a DSN. No wrapper type, no ping: pgxpool connects
+lazily, and reachability is `health`'s question.
+
+```go
+pool, err := postgres.New(ctx, dsn, postgres.WithMaxConns(25))
+if err != nil {
+    return fmt.Errorf("db: %w", err)
+}
+defer pool.Close()
+```
+
+`New` owns the pool size. A `pool_max_conns` in the DSN is overwritten by
+`DefaultMaxConns` (10) or by `WithMaxConns`.
+
+## telemetry/otel
 
 Wires the OpenTelemetry trace and metric providers at boot and flushes them at
 shutdown.
 
 ```go
-tel, err := telemetry.Setup(ctx, telemetry.Config{
-    ServiceName:        "users",
-    ServiceVersion:     build.Version,
-    OTLPEndpoint:       cfg.OTLPEndpoint, // "" reports nowhere
-    PrometheusRegistry: reg,              // nil for a pushed service
+tel, err := otel.Setup(ctx, otel.Config{
+    ServiceName:    "users",
+    ServiceVersion: build.Version,
+    OTLPEndpoint:   cfg.OTLPEndpoint, // "" reports nowhere
 })
 if err != nil {
     return fmt.Errorf("telemetry: %w", err)
@@ -227,7 +263,6 @@ It ships **no instrumentation**. `Setup` installs the providers as
 OpenTelemetry's globals, which is how a maintained library finds them:
 
 ```go
-mux.Handle("GET /metrics", telemetry.MetricsHandler(reg))
 srv := httpd.New(":8080", otelhttp.NewHandler(mux, "server"))
 ```
 
@@ -240,23 +275,31 @@ Without it a trace stops at the first service boundary, and a test pins it.
 `OTLPEndpoint` empty installs providers with no exporter, so the instrumented
 code runs unchanged on a laptop and in a test.
 
-Shutdown is deliberately **not** a `Runner`. Telemetry has to outlive the
+Shutdown is deliberately **not** an `app.Runner`. Telemetry has to outlive the
 servers it observes or their last spans never leave the process, and an
 `app.App` stops every runner at once. It belongs in a `defer` in main, which
 runs after `app.Run` has returned.
 
-## pg
+## telemetry/prometheus
 
-Opens a `*pgxpool.Pool` from a DSN. No wrapper type, no ping: pgxpool connects
-lazily, and reachability is `health`'s question.
+Lets a Prometheus server scrape those same OpenTelemetry metrics, for a
+service pulled rather than pushed.
 
 ```go
-pool, err := pg.New(ctx, dsn, pg.WithMaxConns(25))
-if err != nil {
-    return fmt.Errorf("db: %w", err)
-}
-defer pool.Close()
+reg := promclient.NewRegistry()
+reader, err := prometheus.Reader(reg)
+...
+tel, err := otel.Setup(ctx, otel.Config{
+    ServiceName:   "users",
+    MetricReaders: []sdkmetric.Reader{reader},
+})
+...
+mux.Handle("GET /metrics", prometheus.Handler(reg))
 ```
 
-`New` owns the pool size. A `pool_max_conns` in the DSN is overwritten by
-`DefaultMaxConns` (10) or by `WithMaxConns`.
+The instruments stay OpenTelemetry's, so a service switches between scraping
+and pushing by changing this wiring in main and nothing else.
+
+It is a separate module from `telemetry/otel` and requires neither it nor the
+reverse: a pushed service never sees the Prometheus dependency, and a scraped
+one plugs in through the SDK's own `Reader` interface.

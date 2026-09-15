@@ -1,5 +1,5 @@
-// Package telemetry wires the OpenTelemetry trace and metric providers at
-// boot and flushes them at shutdown.
+// Package otel wires the OpenTelemetry trace and metric providers at boot and
+// flushes them at shutdown.
 //
 // It deliberately ships no instrumentation. Setup installs the providers as
 // OpenTelemetry's globals, which is how otelhttp, otelgrpc and any
@@ -10,25 +10,27 @@
 // Writing that middleware by hand is how the services this replaces each grew
 // a hundred lines reimplementing a maintained library.
 //
-// Shutdown is not a Runner. Telemetry has to outlive the servers it observes,
-// or their last spans never leave the process, and an app.App stops every
-// runner at once. It belongs in a defer in main, which runs after app.Run has
-// returned.
-package telemetry
+// Metrics leave through the readers Config names. For a service scraped rather
+// than pushed, got-tk/telemetry/prometheus returns one.
+//
+// Shutdown is not an app.Runner. Telemetry has to outlive the servers it
+// observes, or their last spans never leave the process, and an app.App stops
+// every runner at once. It belongs in a defer in main, which runs after
+// app.Run has returned.
+//
+// The package name shadows go.opentelemetry.io/otel, so a main that needs
+// both aliases one of them.
+package otel
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.opentelemetry.io/otel"
+	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otlpmetric "go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	otlptrace "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -52,10 +54,9 @@ type Config struct {
 	// the code under them runs unchanged in a test or on a laptop.
 	OTLPEndpoint string
 
-	// PrometheusRegistry adds a pull-based metric reader on top of any OTLP
-	// one, for a service scraped rather than pushed. Serve it with
-	// MetricsHandler. Nil disables it.
-	PrometheusRegistry *prometheus.Registry
+	// MetricReaders are read on top of any OTLP one, for a service scraped
+	// rather than pushed. got-tk/telemetry/prometheus returns one.
+	MetricReaders []sdkmetric.Reader
 }
 
 // Providers holds what Setup built, for a caller that would rather pass a
@@ -83,8 +84,6 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, err
 	}
 
-	p := &Providers{}
-
 	tracer, err := newTracerProvider(ctx, cfg, res)
 	if err != nil {
 		return nil, err
@@ -97,12 +96,15 @@ func Setup(ctx context.Context, cfg Config) (*Providers, error) {
 		return nil, err
 	}
 
-	p.Tracer, p.Meter = tracer, meter
-	p.shutdowns = []func(context.Context) error{tracer.Shutdown, meter.Shutdown}
+	p := &Providers{
+		Tracer:    tracer,
+		Meter:     meter,
+		shutdowns: []func(context.Context) error{tracer.Shutdown, meter.Shutdown},
+	}
 
-	otel.SetTracerProvider(tracer)
-	otel.SetMeterProvider(meter)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+	otelapi.SetTracerProvider(tracer)
+	otelapi.SetMeterProvider(meter)
+	otelapi.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
@@ -122,12 +124,6 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("telemetry: shutdown: %w", err)
 	}
 	return nil
-}
-
-// MetricsHandler serves a Prometheus registry, for the /metrics route a
-// scraped service exposes.
-func MetricsHandler(g prometheus.Gatherer) http.Handler {
-	return promhttp.HandlerFor(g, promhttp.HandlerOpts{})
 }
 
 func newResource(cfg Config) (*resource.Resource, error) {
@@ -176,11 +172,7 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 		opts = append(opts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)))
 	}
 
-	if cfg.PrometheusRegistry != nil {
-		reader, err := promexporter.New(promexporter.WithRegisterer(cfg.PrometheusRegistry))
-		if err != nil {
-			return nil, fmt.Errorf("telemetry: prometheus reader: %w", err)
-		}
+	for _, reader := range cfg.MetricReaders {
 		opts = append(opts, sdkmetric.WithReader(reader))
 	}
 

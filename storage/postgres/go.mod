@@ -1,4 +1,4 @@
-module github.com/menems/got-tk/pg
+module github.com/menems/got-tk/storage/postgres
 
 go 1.27.1
 

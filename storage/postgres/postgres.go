@@ -3,7 +3,7 @@
 // New does not dial: pgxpool connects lazily on the first query. Whether the
 // database is reachable is a readiness question, answered by pkg/health, to
 // which *pgxpool.Pool's Ping method can be handed directly.
-package pg
+package postgres
 
 import (
 	"context"
