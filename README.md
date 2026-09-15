@@ -35,7 +35,7 @@ func main() {
 
     err = app.New(map[string]app.Runner{
         "http": httpd.New(":8080", mux),
-        "grpc": app.StartStop(func() error { return grpcSrv.Serve(lis) }, grpcSrv.GracefulStop),
+        "grpc": app.RunnerFrom(func() error { return grpcSrv.Serve(lis) }, grpcSrv.GracefulStop),
     }).Run(ctx)
 }
 ```
@@ -55,9 +55,9 @@ process with it.
 `*App` is itself a `Runner`, so a subsystem with its own runners mounts as one
 entry of the group above it.
 
-`StartStop(start, stop)` adapts a runner written before `context.Context`,
-where a blocking `Serve` is ended by a separate `GracefulStop`. `stop` must
-make `start` return.
+`RunnerFrom(start, stop)` builds a `Runner` from a blocking start and a
+separate stop, the shape of everything written before `context.Context`.
+`stop` must make `start` return.
 
 Signals stay in `main`. A container that grabs SIGTERM behind the caller's back
 fights whoever else wants it: a test, a parent process manager, an embedding

@@ -38,13 +38,12 @@ type RunnerFunc func(ctx context.Context) error
 // Run calls f.
 func (f RunnerFunc) Run(ctx context.Context) error { return f(ctx) }
 
-// StartStop adapts a runner whose lifecycle is a blocking start and a
-// separate stop, which is the shape of everything written before
-// context.Context: a grpc.Server's Serve and GracefulStop, a consumer's
-// Consume and Close.
+// RunnerFrom builds a Runner from a blocking start and a separate stop, which
+// is the shape of everything written before context.Context: a grpc.Server's
+// Serve and GracefulStop, a consumer's Consume and Close.
 //
 // stop must make start return, or the runner never releases its goroutine.
-func StartStop(start func() error, stop func()) Runner {
+func RunnerFrom(start func() error, stop func()) Runner {
 	return RunnerFunc(func(ctx context.Context) error {
 		done := make(chan error, 1)
 		go func() { done <- start() }()

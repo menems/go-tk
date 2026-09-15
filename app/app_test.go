@@ -117,11 +117,11 @@ func TestRunJoinsEveryError(t *testing.T) {
 	}
 }
 
-func TestStartStopStopsOnCancel(t *testing.T) {
+func TestRunnerFromStopsOnCancel(t *testing.T) {
 	t.Parallel()
 
 	release := make(chan struct{})
-	runner := app.StartStop(
+	runner := app.RunnerFrom(
 		func() error { <-release; return nil },
 		func() { close(release) },
 	)
@@ -134,14 +134,14 @@ func TestStartStopStopsOnCancel(t *testing.T) {
 	}
 }
 
-// TestStartStopStartFailingAlone pins that a start returning on its own is
+// TestRunnerFromStartFailingAlone pins that a start returning on its own is
 // reported without stop being called: stopping something already stopped is
 // how a GracefulStop panics.
-func TestStartStopStartFailingAlone(t *testing.T) {
+func TestRunnerFromStartFailingAlone(t *testing.T) {
 	t.Parallel()
 
 	var stopped atomic.Bool
-	runner := app.StartStop(
+	runner := app.RunnerFrom(
 		func() error { return errBoom },
 		func() { stopped.Store(true) },
 	)
