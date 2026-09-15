@@ -9,6 +9,29 @@ hands back stdlib types, and each service writes its own five-line adapter.
 go get github.com/menems/got-tk
 ```
 
+## pkg/httpd
+
+Runs an `http.Handler` with bounded timeouts and a graceful shutdown driven by
+a context.
+
+```go
+srv := httpd.New(":8080", router, httpd.WithShutdownTimeout(30*time.Second))
+if err := srv.Run(ctx); err != nil {
+    return fmt.Errorf("http: %w", err)
+}
+```
+
+The router is the caller's: a `chi.Router`, an `http.ServeMux`, or a mux
+wrapped in `h2c` for ConnectRPC over cleartext HTTP/2.
+
+`Run` blocks until `ctx` is cancelled, then drains in-flight requests within
+the shutdown timeout (10s, `WithShutdownTimeout`). Read, write and idle
+timeouts all default to a non-zero value: `http.Server` reads a zero as no
+limit, which is how a slow client holds a connection open forever.
+
+`WithListener` serves an already-bound listener, which is how a port-zero bind
+reports the address it got.
+
 ## pkg/pg
 
 Opens a `*pgxpool.Pool` from a DSN. No wrapper type, no ping: pgxpool connects
