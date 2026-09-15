@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/menems/got-tk/app"
+	"github.com/menems/go-tk/app"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))

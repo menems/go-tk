@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/menems/got-tk/config"
+	"github.com/menems/go-tk/config"
 )
 
 // env turns a map into the getenv New takes, so no test touches the process

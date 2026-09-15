@@ -11,7 +11,7 @@
 // a hundred lines reimplementing a maintained library.
 //
 // Metrics leave through the readers Config names. For a service scraped rather
-// than pushed, got-tk/telemetry/prometheus returns one.
+// than pushed, go-tk/telemetry/prometheus returns one.
 //
 // Shutdown is not an app.Runner. Telemetry has to outlive the servers it
 // observes, or their last spans never leave the process, and an app.App stops
@@ -55,7 +55,7 @@ type Config struct {
 	OTLPEndpoint string
 
 	// MetricReaders are read on top of any OTLP one, for a service scraped
-	// rather than pushed. got-tk/telemetry/prometheus returns one.
+	// rather than pushed. go-tk/telemetry/prometheus returns one.
 	MetricReaders []sdkmetric.Reader
 }
 

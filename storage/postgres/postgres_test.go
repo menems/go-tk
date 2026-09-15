@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/menems/got-tk/storage/postgres"
+	"github.com/menems/go-tk/storage/postgres"
 )
 
 // validDSN points at a port nothing listens on. pgxpool connects lazily, so

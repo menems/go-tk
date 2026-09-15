@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/menems/got-tk/telemetry/otel"
+	"github.com/menems/go-tk/telemetry/otel"
 )
 
 // None of these tests calls t.Parallel: Setup installs the OpenTelemetry

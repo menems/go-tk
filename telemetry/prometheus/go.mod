@@ -1,4 +1,4 @@
-module github.com/menems/got-tk/telemetry/prometheus
+module github.com/menems/go-tk/telemetry/prometheus
 
 go 1.27.1
 

@@ -1,4 +1,4 @@
-module github.com/menems/got-tk/telemetry/otel
+module github.com/menems/go-tk/telemetry/otel
 
 go 1.27.1
 

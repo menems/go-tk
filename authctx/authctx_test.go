@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/menems/got-tk/authctx"
+	"github.com/menems/go-tk/authctx"
 )
 
 func TestBearer(t *testing.T) {

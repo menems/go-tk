@@ -10,7 +10,7 @@ import (
 	promclient "github.com/prometheus/client_golang/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
-	"github.com/menems/got-tk/telemetry/prometheus"
+	"github.com/menems/go-tk/telemetry/prometheus"
 )
 
 // TestReaderRoundTrip is the round trip a scraped service depends on: a

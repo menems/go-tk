@@ -1,4 +1,4 @@
-# got-tk
+# go-tk
 
 Go toolkit. Bricks that every service here rewrote, extracted once.
 
@@ -34,22 +34,22 @@ another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/got-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
-| `github.com/menems/got-tk/storage/postgres` | `storage/postgres` | pgx |
-| `github.com/menems/got-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
-| `github.com/menems/got-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
+| `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
+| `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
+| `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/got-tk                        # app, transport/http, authctx, health, config
-go get github.com/menems/got-tk/storage/postgres       # adds pgx, and nothing else
-go get github.com/menems/got-tk/telemetry/otel         # adds OpenTelemetry
-go get github.com/menems/got-tk/telemetry/prometheus   # adds Prometheus
+go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config
+go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
+go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
+go get github.com/menems/go-tk/telemetry/prometheus   # adds Prometheus
 ```
 
 Import paths are the module paths, so nothing in your code changes when a
 package moves module.
 
-Measured on a service importing `got-tk/transport/http` alone: `go list -m all`
+Measured on a service importing `go-tk/transport/http` alone: `go list -m all`
 reports 2 modules, itself and the toolkit, and no `go.sum` is written at all.
 As a single module it reported 39, otel, Prometheus and pgx among them, which
 is what a vulnerability scanner reads even though none of it was ever

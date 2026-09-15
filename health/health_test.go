@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/menems/got-tk/health"
+	"github.com/menems/go-tk/health"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))

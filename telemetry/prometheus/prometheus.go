@@ -1,6 +1,6 @@
 // Package prometheus lets a Prometheus server scrape OpenTelemetry metrics.
 //
-// Reader plugs into got-tk/telemetry/otel as a metric reader, and Handler
+// Reader plugs into go-tk/telemetry/otel as a metric reader, and Handler
 // serves what it collected on the route Prometheus scrapes:
 //
 //	reg := promclient.NewRegistry()

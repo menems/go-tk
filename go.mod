@@ -1,3 +1,3 @@
-module github.com/menems/got-tk
+module github.com/menems/go-tk
 
 go 1.27.1
