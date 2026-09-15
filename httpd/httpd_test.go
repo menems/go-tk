@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/menems/got-tk/pkg/httpd"
+	"github.com/menems/got-tk/httpd"
 )
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
