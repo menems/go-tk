@@ -83,6 +83,39 @@ limit, which is how a slow client holds a connection open forever.
 `WithListener` serves an already-bound listener, which is how a port-zero bind
 reports the address it got.
 
+## authctx
+
+Reads the bearer credential off a request, and carries what authenticating it
+produced through the context.
+
+```go
+var userID = authctx.NewKey[uuid.UUID]("user_id")
+
+func authenticate(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        token, ok := authctx.Bearer(r.Header)
+        if !ok {
+            http.Error(w, "unauthorized", http.StatusUnauthorized)
+            return
+        }
+        id, err := verify(token) // yours: the algorithm and the keys are yours
+        ...
+        next.ServeHTTP(w, r.WithContext(userID.With(r.Context(), id)))
+    })
+}
+```
+
+It verifies nothing. A token's signature, claims and expiry are the service's
+business, because that is where the algorithm and the key material differ.
+
+`Bearer` takes an `http.Header`, which a net/http middleware and a
+`connect.Request` both hold. The scheme is matched case-insensitively, as
+RFC 7235 requires and as the four hand-rolled versions this replaces did not.
+
+A key is a value, not a type: `NewKey` returns a distinct key per call, so a
+user id and a tenant id that are both `uuid.UUID` do not overwrite each other.
+Declare it at package level, next to the middleware that fills it.
+
 ## health
 
 Liveness and readiness probes as `http.HandlerFunc`. Stdlib only.
