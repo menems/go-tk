@@ -12,7 +12,7 @@ make check
 
 ## app
 
-The application container: several engines side by side under one context,
+The application container: several runners side by side under one context,
 stopped together.
 
 ```go
@@ -33,26 +33,29 @@ func main() {
     lis, err := net.Listen("tcp", ":9090")
     ...
 
-    err = app.New(map[string]app.Engine{
+    err = app.New(map[string]app.Runner{
         "http": httpd.New(":8080", mux),
         "grpc": app.StartStop(func() error { return grpcSrv.Serve(lis) }, grpcSrv.GracefulStop),
     }).Run(ctx)
 }
 ```
 
-An engine is anything that occupies a goroutine until told to stop: an HTTP
+A runner is anything that occupies a goroutine until told to stop: an HTTP
 server, a gRPC server, a consumer, a scheduler.
 
 The ordinary way down is SIGTERM: `signal.NotifyContext` cancels the context,
-every engine sees it at once, and `Run` returns when the last one has drained.
+every runner sees it at once, and `Run` returns when the last one has drained.
 It reports every error joined, in name order.
 
-The other way down is an engine returning by itself, which cancels the rest.
-So every engine must be long-running: a one-shot task, a migration or a warm-up
-runs before `Run`, never as an engine, because its clean return would take the
+The other way down is a runner returning by itself, which cancels the rest.
+So every runner must be long-running: a one-shot task, a migration or a warm-up
+runs before `Run`, never as a runner, because its clean return would take the
 process with it.
 
-`StartStop(start, stop)` adapts an engine written before `context.Context`,
+`*App` is itself a `Runner`, so a subsystem with its own runners mounts as one
+entry of the group above it.
+
+`StartStop(start, stop)` adapts a runner written before `context.Context`,
 where a blocking `Serve` is ended by a separate `GracefulStop`. `stop` must
 make `start` return.
 

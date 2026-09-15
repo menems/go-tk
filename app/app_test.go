@@ -13,13 +13,16 @@ import (
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+// An App is itself a Runner, so a group nests in a group.
+var _ app.Runner = (*app.App)(nil)
+
 var (
 	errBoom = errors.New("boom")
 	errBust = errors.New("bust")
 )
 
 // serving blocks until the app stops it, like a real server would.
-func serving(started chan<- struct{}) app.EngineFunc {
+func serving(started chan<- struct{}) app.RunnerFunc {
 	return func(ctx context.Context) error {
 		close(started)
 		<-ctx.Done()
@@ -27,16 +30,16 @@ func serving(started chan<- struct{}) app.EngineFunc {
 	}
 }
 
-func failing(err error) app.EngineFunc {
+func failing(err error) app.RunnerFunc {
 	return func(context.Context) error { return err }
 }
 
-func run(t *testing.T, ctx context.Context, engines map[string]app.Engine) error {
+func run(t *testing.T, ctx context.Context, runners map[string]app.Runner) error {
 	t.Helper()
-	return app.New(engines, app.WithLogger(discard)).Run(ctx)
+	return app.New(runners, app.WithLogger(discard)).Run(ctx)
 }
 
-func TestRunNoEngines(t *testing.T) {
+func TestRunNoRunners(t *testing.T) {
 	t.Parallel()
 
 	if err := run(t, context.Background(), nil); err != nil {
@@ -44,7 +47,7 @@ func TestRunNoEngines(t *testing.T) {
 	}
 }
 
-func TestRunStopsEveryEngineOnCancel(t *testing.T) {
+func TestRunStopsEveryRunnerOnCancel(t *testing.T) {
 	t.Parallel()
 
 	httpStarted, grpcStarted := make(chan struct{}), make(chan struct{})
@@ -52,7 +55,7 @@ func TestRunStopsEveryEngineOnCancel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- run(t, ctx, map[string]app.Engine{
+		done <- run(t, ctx, map[string]app.Runner{
 			"http": serving(httpStarted),
 			"grpc": serving(grpcStarted),
 		})
@@ -67,13 +70,13 @@ func TestRunStopsEveryEngineOnCancel(t *testing.T) {
 	}
 }
 
-// TestRunFailingEngineStopsTheOthers is the point of the package: Run returns
-// only once the engine that was still serving has been cancelled too.
-func TestRunFailingEngineStopsTheOthers(t *testing.T) {
+// TestRunFailingRunnerStopsTheOthers is the point of the package: Run returns
+// only once the runner that was still serving has been cancelled too.
+func TestRunFailingRunnerStopsTheOthers(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
-	err := run(t, context.Background(), map[string]app.Engine{
+	err := run(t, context.Background(), map[string]app.Runner{
 		"http": serving(started),
 		"grpc": failing(errBoom),
 	})
@@ -83,17 +86,17 @@ func TestRunFailingEngineStopsTheOthers(t *testing.T) {
 	}
 }
 
-// TestRunCleanExitStopsTheOthers pins the half errgroup would miss: an engine
+// TestRunCleanExitStopsTheOthers pins the half errgroup would miss: a runner
 // that returns nil without being cancelled still brings the process down,
 // rather than leaving a pod that passes its liveness probe and serves nothing.
-// It is also why a one-shot task cannot be an engine.
+// It is also why a one-shot task cannot be a runner.
 func TestRunCleanExitStopsTheOthers(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan struct{})
-	err := run(t, context.Background(), map[string]app.Engine{
+	err := run(t, context.Background(), map[string]app.Runner{
 		"http": serving(started),
-		"grpc": app.EngineFunc(func(context.Context) error { return nil }),
+		"grpc": app.RunnerFunc(func(context.Context) error { return nil }),
 	})
 
 	if err != nil {
@@ -104,7 +107,7 @@ func TestRunCleanExitStopsTheOthers(t *testing.T) {
 func TestRunJoinsEveryError(t *testing.T) {
 	t.Parallel()
 
-	err := run(t, context.Background(), map[string]app.Engine{
+	err := run(t, context.Background(), map[string]app.Runner{
 		"grpc": failing(errBoom),
 		"http": failing(errBust),
 	})
@@ -118,7 +121,7 @@ func TestStartStopStopsOnCancel(t *testing.T) {
 	t.Parallel()
 
 	release := make(chan struct{})
-	engine := app.StartStop(
+	runner := app.StartStop(
 		func() error { <-release; return nil },
 		func() { close(release) },
 	)
@@ -126,7 +129,7 @@ func TestStartStopStopsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := engine.Run(ctx); err != nil {
+	if err := runner.Run(ctx); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
 }
@@ -138,15 +141,45 @@ func TestStartStopStartFailingAlone(t *testing.T) {
 	t.Parallel()
 
 	var stopped atomic.Bool
-	engine := app.StartStop(
+	runner := app.StartStop(
 		func() error { return errBoom },
 		func() { stopped.Store(true) },
 	)
 
-	if err := engine.Run(context.Background()); !errors.Is(err, errBoom) {
+	if err := runner.Run(context.Background()); !errors.Is(err, errBoom) {
 		t.Fatalf("Run = %v, want errBoom", err)
 	}
 	if stopped.Load() {
 		t.Error("stop was called although start returned on its own")
+	}
+}
+
+// TestAppNestsInAnApp pins what the shared Run signature buys: a subsystem
+// with its own runners mounts as one runner of the group above it, and the
+// outer cancellation reaches all of them.
+func TestAppNestsInAnApp(t *testing.T) {
+	t.Parallel()
+
+	innerStarted, outerStarted := make(chan struct{}), make(chan struct{})
+	inner := app.New(
+		map[string]app.Runner{"http": serving(innerStarted)},
+		app.WithLogger(discard),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- run(t, ctx, map[string]app.Runner{
+			"grpc":      serving(outerStarted),
+			"subsystem": inner,
+		})
+	}()
+
+	<-innerStarted
+	<-outerStarted
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil", err)
 	}
 }
