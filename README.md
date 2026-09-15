@@ -10,6 +10,26 @@ go get github.com/menems/got-tk
 make check
 ```
 
+## Dependencies
+
+| package | outside the stdlib |
+|---|---|
+| `app`, `httpd`, `health`, `authctx`, `config` | none |
+| `pg` | pgx |
+| `telemetry` | OpenTelemetry, Prometheus |
+
+One module, and importing one package pulls only what that package needs. A
+service importing `got-tk/httpd` alone gets an empty indirect block in its
+`go.mod` and an 8.9 MB binary; the same service importing `got-tk/telemetry`
+gets 31 indirect requirements and 22 MB. Nothing unimported is downloaded,
+compiled or linked.
+
+What one module does cost is a version floor: `go list -m all` selects this
+repo's otel and pgx versions even where nothing imports them, so a service
+already on an older otel is pushed up to ours. Splitting `telemetry` into its
+own module would lift that, at the price of a second `go.mod` and its own
+`telemetry/vX.Y.Z` tags. Not worth it until a dependency has to differ.
+
 ## app
 
 The application container: several runners side by side under one context,
@@ -170,6 +190,50 @@ Error messages name the key and never the value, because a malformed
 Only a string can be `Required`. The values with no sensible default are DSNs,
 endpoints and secrets; a port or a timeout that reaches production unset wants
 a default, not a boot failure.
+
+## telemetry
+
+Wires the OpenTelemetry trace and metric providers at boot and flushes them at
+shutdown.
+
+```go
+tel, err := telemetry.Setup(ctx, telemetry.Config{
+    ServiceName:        "users",
+    ServiceVersion:     build.Version,
+    OTLPEndpoint:       cfg.OTLPEndpoint, // "" reports nowhere
+    PrometheusRegistry: reg,              // nil for a pushed service
+})
+if err != nil {
+    return fmt.Errorf("telemetry: %w", err)
+}
+defer func() {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    _ = tel.Shutdown(ctx)
+}()
+```
+
+It ships **no instrumentation**. `Setup` installs the providers as
+OpenTelemetry's globals, which is how a maintained library finds them:
+
+```go
+mux.Handle("GET /metrics", telemetry.MetricsHandler(reg))
+srv := httpd.New(":8080", otelhttp.NewHandler(mux, "server"))
+```
+
+Writing that middleware by hand is how the versions this replaces each grew a
+hundred lines reimplementing `otelhttp`.
+
+`Setup` also sets the W3C trace context propagator, which all of them forgot.
+Without it a trace stops at the first service boundary, and a test pins it.
+
+`OTLPEndpoint` empty installs providers with no exporter, so the instrumented
+code runs unchanged on a laptop and in a test.
+
+Shutdown is deliberately **not** a `Runner`. Telemetry has to outlive the
+servers it observes or their last spans never leave the process, and an
+`app.App` stops every runner at once. It belongs in a `defer` in main, which
+runs after `app.Run` has returned.
 
 ## pg
 
