@@ -2,7 +2,7 @@ GO ?= go
 
 # One module per dependency set, so importing one does not drag the others
 # into a consumer's module graph. See README, Dependencies.
-MODULES ?= . storage/postgres telemetry/otel telemetry/prometheus
+MODULES ?= . storage/postgres storage/postgres/migrate telemetry/otel telemetry/prometheus
 
 define for_each_module
 	@set -e; for m in $(MODULES); do echo "== $$m"; (cd $$m && $(1)); done

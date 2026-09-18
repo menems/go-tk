@@ -10,12 +10,13 @@ The rule holds downward too. `app`, `transport/http`, `authctx`, `health` and `c
 A package hands back stdlib types and lets the caller write its own adapter. Nothing here imports chi, ConnectRPC or a framework.
 
 ## Modules
-Four, one per dependency set, so importing one package cannot drag another's dependencies into a consumer's graph.
+Five, one per dependency set, so importing one package cannot drag another's dependencies into a consumer's graph.
 
 | Module | Packages | Outside the stdlib |
 |---|---|---|
 | `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
+| `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 

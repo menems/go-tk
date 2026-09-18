@@ -3,6 +3,7 @@ go 1.27.1
 use (
 	.
 	./storage/postgres
+	./storage/postgres/migrate
 	./telemetry/otel
 	./telemetry/prometheus
 )

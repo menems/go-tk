@@ -14,6 +14,7 @@ authctx/                 read the bearer, carry the principal
 health/                  liveness and readiness probes
 config/                  read configuration at boot
 storage/postgres/        a pgxpool.Pool from a DSN
+storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
 telemetry/prometheus/    let Prometheus scrape them
 ```
@@ -29,19 +30,21 @@ needs both aliases one.
 
 ## Dependencies
 
-Four modules, one per dependency set, so importing one package cannot drag
+Five modules, one per dependency set, so importing one package cannot drag
 another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
 | `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
+| `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
 go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config
 go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
+go get github.com/menems/go-tk/storage/postgres/migrate  # adds golang-migrate
 go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
 go get github.com/menems/go-tk/telemetry/prometheus   # adds Prometheus
 ```
@@ -237,6 +240,50 @@ defer pool.Close()
 
 `New` owns the pool size. A `pool_max_conns` in the DSN is overwritten by
 `DefaultMaxConns` (10) or by `WithMaxConns`.
+
+## storage/postgres/migrate
+
+Applies SQL migrations out of band, from a command of the consuming module.
+The service never migrates at boot: N replicas would race on the same
+migration, a binary rollback cannot roll the schema back, and the server would
+carry the migration library.
+
+The consumer owns the two things this package cannot: the files, embedded and
+handed over as an `fs.FS`, and the DSN, read in its own `main`.
+
+```go
+//go:embed *.sql
+var migrationsFS embed.FS
+
+func main() {
+    logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+    dsn := os.Getenv("DATABASE_URL")
+    if dsn == "" {
+        logger.Error("missing required environment variable DATABASE_URL")
+        os.Exit(1)
+    }
+
+    if err := migrate.Run(logger, dsn, migrationsFS, os.Args[1:]); err != nil {
+        if errors.Is(err, migrate.ErrUsage) {
+            fmt.Fprintln(os.Stderr, migrate.Usage)
+            os.Exit(2)
+        }
+        logger.Error("migrate failed", "error", err)
+        os.Exit(1)
+    }
+}
+```
+
+Register that command as a `tool` in the consumer's `go.mod`
+(`go get -tool ./cmd/migrate`, run as `go tool migrate up`) and call it from
+the task runner. Its own module is what keeps golang-migrate out of the server
+binary.
+
+`Run` parses `up`, `down <N>` and `version` before it opens anything, so a
+typo costs no connection. It takes no `context.Context`: golang-migrate's API
+predates one and a migration in flight is not cancellable, so an ignored
+parameter would be worse than its absence.
 
 ## telemetry/otel
 
