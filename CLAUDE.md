@@ -43,3 +43,5 @@ Runs `fmt-check`, `vet` and `race` over each module in turn. Everything CI runs.
 
 ## Consumers
 A consumer builds against this working copy through a workspace of its own, so an unpublished change is visible to it before a tag exists. Two consequences: a breaking change is felt next door immediately, and nothing merges there until the version it needs is tagged and required. A consumer never edits this repo from one of its own steps.
+
+**Arrival.** A merged plan here is available to a consumer once a tag of its module contains it and that consumer requires the tag. The plan's commit is `git log main --grep='^plan(<name>): create' --format=%H`, the tags carrying it are `git tag --contains <sha>` filtered on the module's prefix, and what the consumer requires is its own `go.mod`. Merged here and untagged is the state `make release` closes, and it is the one blockage a consumer's queue cannot lift for itself.
