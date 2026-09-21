@@ -2,26 +2,52 @@ package httpd
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/menems/go-tk/authctx"
 )
 
-// CodeUnauthenticated is what a covered route refuses with: the request
-// carries no bearer credential this service resolves to a principal.
-const CodeUnauthenticated ErrorCode = "unauthenticated"
+// The codes a covered route refuses with: CodeUnauthenticated when the request
+// carries no bearer credential this service resolves to a principal,
+// CodeAuthUnavailable when its resolver could not reach a verdict about the
+// one it carried.
+const (
+	CodeUnauthenticated ErrorCode = "unauthenticated"
+	CodeAuthUnavailable ErrorCode = "auth_unavailable"
+)
 
-// Fixed, like the rest of the envelope's messages, and it describes the
+// Fixed, like the rest of the envelope's messages, and they describe the
 // request rather than quoting it: neither the token, nor the scheme that was
 // read, nor what the resolver answered about either.
-const messageUnauthenticated = "this request carries no credential this service accepts"
+const (
+	messageUnauthenticated = "this request carries no credential this service accepts"
+	messageAuthUnavailable = "this service could not answer whether this request is authenticated"
+)
 
 // The challenge a 401 owes the client: the scheme to retry under, and no
 // realm, which names a service rather than anything this package knows.
 const challengeBearer = "Bearer"
 
+// ErrUnauthenticated is the verdict a Resolver returns to refuse the token it
+// was handed: this service resolves it to no principal.
+//
+// It names a result and not a cause, so one sentinel covers every reason a
+// token is refused (unknown, expired, revoked, signed by nobody): the client
+// is told the same thing by all of them, and telling them apart would be
+// telling it which guess was close.
+var ErrUnauthenticated = errors.New("httpd: bearer token resolves to no principal")
+
 // Resolver turns the bearer token of a request into the principal it belongs
-// to, and refuses the request with an error.
+// to, and answers an error otherwise.
+//
+// The error says which of two things happened. An error matching
+// ErrUnauthenticated under errors.Is is a verdict: the token was judged and
+// refused, and the request is answered 401. Any other error is the resolver
+// failing rather than judging, the request is answered 500, and that includes
+// an error saying neither thing: refusing a request nothing judged would
+// report a store that is down as a client that was turned away, and hide the
+// outage behind the one status nobody investigates.
 //
 // It is the service's own: the algorithm, the key material and the store are
 // exactly where services differ, which is why nothing here verifies anything.
@@ -42,10 +68,12 @@ type Resolver[T any] func(ctx context.Context, token string) (T, error)
 //	    httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: status},
 //	)
 //
-// A request carrying no bearer credential, or one resolve refuses, is answered
-// 401 under CodeUnauthenticated with a WWW-Authenticate header, and the
-// wrapped handler does not run. Nothing of the credential, and nothing resolve
-// said about it, reaches that answer.
+// A request carrying no bearer credential, or one resolve refuses with
+// ErrUnauthenticated, is answered 401 under CodeUnauthenticated with a
+// WWW-Authenticate header. One whose resolve failed instead of judging is
+// answered 500 under CodeAuthUnavailable, with no such header. The wrapped
+// handler runs in neither case, and nothing of the credential, nor anything
+// resolve said about it, reaches either answer.
 //
 // The wrap sits on the handler rather than in front of the table, so coverage
 // is exactly the set of handlers wrapped and is named where the route is. A
@@ -65,8 +93,15 @@ func RequireBearer[T any](key *authctx.Key[T], resolve Resolver[T]) func(http.Ha
 			principal, err := resolve(r.Context(), token)
 			if err != nil {
 				// The text is the resolver's own and may name the credential
-				// it read, so it reaches neither this answer nor a log here.
-				refuseUnauthenticated(w)
+				// it read, so it reaches neither answer nor a log here: what
+				// an operator has to go on is the status and the code.
+				if errors.Is(err, ErrUnauthenticated) {
+					refuseUnauthenticated(w)
+					return
+				}
+				// No challenge on this one: a scheme to retry under would
+				// claim a verdict was reached, and none was.
+				WriteError(w, http.StatusInternalServerError, CodeAuthUnavailable, messageAuthUnavailable)
 				return
 			}
 

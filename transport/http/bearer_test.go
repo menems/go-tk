@@ -3,8 +3,10 @@ package httpd_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -21,24 +23,41 @@ type principal struct{ Name string }
 // from every test, written by none, so the parallel tests below share nothing.
 var principalKey = authctx.NewKey[principal]("principal")
 
-// The token the resolver below accepts, and the one it refuses. The refused
-// one is also what the no-echo assertions look for in a refusal.
+// The token the resolver below accepts, the one it refuses, and the one it
+// cannot answer about at all.
 const (
-	goodToken = "good-token"
-	badToken  = "marker-token"
+	goodToken   = "good-token"
+	badToken    = "marker-token"
+	brokenToken = "marker-broken-token"
 )
 
-// resolver stands for the service's own verification: it accepts one token and
-// refuses every other, and records how many times it was asked anything, so a
-// request that must reach no resolver can be checked to have reached none.
+// The texts the resolver puts in its own errors, and what the no-echo
+// assertions look for in the answers those two requests get: one names the
+// credential that was read, the other the resolver's own innards.
+const (
+	refusalText = "marker-token belongs to nobody"
+	failureText = "marker-store unreachable"
+)
+
+// resolver stands for the service's own verification: it accepts one token,
+// refuses another with the sentinel carrying that verdict, and answers a third
+// with a failure of its own instead of a verdict. It records how many times it
+// was asked anything, so a request that must reach no resolver can be checked
+// to have reached none.
 type resolver struct{ calls atomic.Int64 }
 
 func (rv *resolver) resolve(_ context.Context, token string) (principal, error) {
 	rv.calls.Add(1)
-	if token != goodToken {
-		return principal{}, errors.New("unknown token")
+	switch token {
+	case goodToken:
+		return principal{Name: "owner"}, nil
+	case brokenToken:
+		// Not a verdict: this stands for the store being down or the key
+		// material being unreadable, neither of which is the token's fault.
+		return principal{}, errors.New(failureText)
+	default:
+		return principal{}, fmt.Errorf("%s: %w", refusalText, httpd.ErrUnauthenticated)
 	}
-	return principal{Name: "owner"}, nil
 }
 
 // reader is a route's handler: it answers with the principal it finds in the
@@ -144,12 +163,74 @@ func TestBearerRefusesACoveredRequestItCannotResolve(t *testing.T) {
 
 			assertUnauthenticated(t, status, answer, header)
 			assertNoEcho(t, answer, badToken)
-			assertNoEcho(t, answer, "unknown token")
+			assertNoEcho(t, answer, refusalText)
 			if g.covered.ran.Load() {
 				t.Error("the covered handler ran on a request the wrap refused")
 			}
 			if got := g.resolver.calls.Load(); got != tc.wantCalls {
 				t.Errorf("resolver asked %d times, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// TestBearerTellsAResolverRefusalFromAResolverFailure pins the two answers a
+// resolver's error can get, side by side: a client branches on the status and
+// the code, and on nothing else, because nothing else of what arrived, or of
+// what the resolver said about it, is in either answer.
+func TestBearerTellsAResolverRefusalFromAResolverFailure(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name          string
+		token         string
+		wantStatus    int
+		wantCode      httpd.ErrorCode
+		wantMessage   string
+		wantChallenge []string
+		unsaid        string
+	}{
+		{
+			name:          "a token its resolver refuses",
+			token:         badToken,
+			wantStatus:    http.StatusUnauthorized,
+			wantCode:      httpd.CodeUnauthenticated,
+			wantMessage:   "this request carries no credential this service accepts",
+			wantChallenge: []string{"Bearer"},
+			unsaid:        refusalText,
+		},
+		{
+			// No challenge on this one: a scheme to retry under would claim a
+			// verdict was reached, and none was.
+			name:        "a token its resolver could not answer about",
+			token:       brokenToken,
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    httpd.CodeAuthUnavailable,
+			wantMessage: "this service could not answer whether this request is authenticated",
+			unsaid:      failureText,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := guard(t)
+
+			req := withBearer(ask(t, g.srv, http.MethodGet, "/things", nil), "Bearer "+tc.token)
+			status, answer, header := exchange(t, g.srv, req)
+
+			assertRefusal(t, status, answer, tc.wantStatus, tc.wantCode, tc.wantMessage)
+			if got := header.Values("WWW-Authenticate"); !slices.Equal(got, tc.wantChallenge) {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, tc.wantChallenge)
+			}
+			assertNoEcho(t, answer, tc.token)
+			assertNoEcho(t, answer, tc.unsaid)
+			if g.covered.ran.Load() {
+				t.Error("the covered handler ran on a request the wrap did not authenticate")
+			}
+			if got := g.resolver.calls.Load(); got != 1 {
+				t.Errorf("resolver asked %d times, want 1", got)
 			}
 		})
 	}

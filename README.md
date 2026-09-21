@@ -188,6 +188,18 @@ request carrying no bearer credential, or one the resolver refuses, is answered
 does not run; nothing of the token, and nothing the resolver said about it,
 comes back in that answer.
 
+A resolver refuses by returning an error wrapping `httpd.ErrUnauthenticated`,
+which is the verdict "this token resolves to no principal" and the only error
+answered 401. Every other error is the resolver failing rather than judging:
+`500 auth_unavailable`, no challenge header, handler still not run. So a client
+tells a credential it should fix from an outage it should retry by the status
+and the code alone, and each is a constant this package writes.
+
+An error saying neither thing lands on the 500 too. Both answers deny the
+request; what the default picks is which one the operator sees, and reporting a
+store that is down as a client that was turned away hides the outage behind the
+one status nobody investigates.
+
 Coverage is exactly the set of handlers wrapped: `/status` above serves with no
 principal in its context, and a handler finding none has to treat that as
 unauthenticated. The wrap sitting on the handler is also what keeps the table's
