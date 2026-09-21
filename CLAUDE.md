@@ -27,6 +27,15 @@ A directory groups siblings, present or planned: `storage/mysql` and `transport/
 ## Releases
 Each module carries its own tag: `v0.2.0`, `storage/postgres/v0.2.0`. `make release VERSION=vX.Y.Z` runs `make check` and pushes every tag. `go.work` is committed, so an edit across modules resolves locally without publishing anything.
 
+## Plans
+Implementation plans live in `docs/plans/<plan-name>.md`, a tracked path. `plan-feature` writes them and commits each one as the first commit of its `feat/<plan-name>` branch; `implement` reads them.
+
+Worktrees: `.claude/worktrees`. `plan-feature` gives each plan a working directory of its own there, and this checkout stays on `main`. `merge` removes it.
+
+`docs/plans/ROADMAP.md` lists the plans, in order, with the context that owns each one and their dependencies. `roadmap` appends to it on `main`; no branch edits it, no line is removed. It carries no status: `next-plan` computes merged / in flight / queued from git.
+
+A context there is the directory the brick lands in; the module follows from its dependency set, so a plan that adds a third-party dependency adds a module. A merged plan is not yet importable next door: `make release` is what a consumer waits for.
+
 ## QA command
 `make check`
 
