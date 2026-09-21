@@ -151,11 +151,16 @@ h, err := httpd.NewRouter(
 
 A request whose method and pattern one of them names reaches that handler, with
 the pattern's values on the request (`r.PathValue("id")`). Every other request
-is answered `404 no_such_route` in the failure envelope below, whatever it
-carried: nothing of it is read, and nothing of it or of the table comes back in
-the answer. A path differing from a named one by a trailing slash, a repeated
-slash or a `..` segment is one nobody named, so it is refused too, where an
-`http.ServeMux` would redirect towards the route beside it.
+is refused in the failure envelope below, whatever it carried: nothing of it is
+read, and nothing of it comes back in the answer.
+
+A path the table names, asked with a method no route names for it, is refused
+`405 method_not_allowed` with an `Allow` header naming exactly the methods
+named for that path, and nothing else of the table; the path's own handlers do
+not run. Everything else is `404 no_such_route`, naming no method. A path
+differing from a named one by a trailing slash, a repeated slash or a `..`
+segment is one nobody named, so it gets that 404 too, where an `http.ServeMux`
+would redirect towards the route beside it.
 
 Patterns are `ServeMux`'s own, minus the method and the host, so there is one
 syntax and each route is named once. A route with no method (it would answer

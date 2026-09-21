@@ -58,6 +58,15 @@ func ask(t *testing.T, srv *httptest.Server, method, path string, body io.Reader
 func send(t *testing.T, srv *httptest.Server, req *http.Request) (int, []byte) {
 	t.Helper()
 
+	status, answer, _ := exchange(t, srv, req)
+	return status, answer
+}
+
+// exchange is send plus the answer's headers, for the one header the gate
+// itself puts on the wire.
+func exchange(t *testing.T, srv *httptest.Server, req *http.Request) (int, []byte, http.Header) {
+	t.Helper()
+
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)
@@ -68,7 +77,7 @@ func send(t *testing.T, srv *httptest.Server, req *http.Request) (int, []byte) {
 	if err != nil {
 		t.Fatalf("read answer: %v", err)
 	}
-	return resp.StatusCode, answer
+	return resp.StatusCode, answer, resp.Header
 }
 
 // assertServed checks the answer is the payload the named handler writes.
@@ -88,6 +97,24 @@ func assertRefused(t *testing.T, status int, answer []byte) {
 	t.Helper()
 
 	assertRefusal(t, status, answer, http.StatusNotFound, httpd.CodeNoSuchRoute, "no route serves this request")
+}
+
+// assertNotAllowed checks the answer is the gate's 405 envelope and nothing
+// else.
+func assertNotAllowed(t *testing.T, status int, answer []byte) {
+	t.Helper()
+
+	assertRefusal(t, status, answer, http.StatusMethodNotAllowed, httpd.CodeMethodNotAllowed, "this method is not allowed on this path")
+}
+
+// assertAllow checks the answer names exactly the methods wanted, in one
+// header value.
+func assertAllow(t *testing.T, header http.Header, want string) {
+	t.Helper()
+
+	if got := header.Values("Allow"); len(got) != 1 || got[0] != want {
+		t.Errorf("Allow = %q, want [%q]", got, want)
+	}
 }
 
 func TestRouterServesTheRoutesTheServiceNamed(t *testing.T) {
@@ -221,6 +248,139 @@ func TestRouterRefusesTheSameWhateverTheRequestCarried(t *testing.T) {
 			assertNoEcho(t, answer, "secret-path")
 			if list.ran.Load() {
 				t.Error("the named route ran on a request nobody named")
+			}
+		})
+	}
+}
+
+// open is one route of a case's table, named by its method and its pattern.
+// The case gives them all one handler: what is under test is an answer that
+// runs none of them.
+type open struct {
+	method  string
+	pattern string
+}
+
+func TestRouterRefusesAMethodNobodyNamedForThePath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		open      []open
+		method    string
+		path      string
+		wantAllow string
+	}{
+		{
+			name:      "a method no route names for a path two of them name",
+			open:      []open{{http.MethodGet, "/things"}, {http.MethodPost, "/things"}},
+			method:    http.MethodDelete,
+			path:      "/things",
+			wantAllow: "GET, POST",
+		},
+		{
+			name:      "a method named for another path only",
+			open:      []open{{http.MethodGet, "/things"}, {http.MethodPost, "/things"}, {http.MethodGet, "/things/{id}"}},
+			method:    http.MethodPost,
+			path:      "/things/42",
+			wantAllow: "GET",
+		},
+		{
+			name:      "a method nobody ever named",
+			open:      []open{{http.MethodGet, "/things"}},
+			method:    "FROB",
+			path:      "/things",
+			wantAllow: "GET",
+		},
+		{
+			name:      "a path a wildcard and an exact route both name",
+			open:      []open{{http.MethodGet, "/things/{id}"}, {http.MethodDelete, "/things/special"}},
+			method:    http.MethodPut,
+			path:      "/things/special",
+			wantAllow: "DELETE, GET",
+		},
+		{
+			name:      "an OPTIONS the service did not name",
+			open:      []open{{http.MethodGet, "/things"}},
+			method:    http.MethodOptions,
+			path:      "/things",
+			wantAllow: "GET",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			named := &marker{name: "named"}
+			routes := make([]httpd.Route, len(tc.open))
+			for i, o := range tc.open {
+				routes[i] = httpd.Route{Method: o.method, Pattern: o.pattern, Handler: named}
+			}
+			srv := gate(t, routes...)
+
+			status, answer, header := exchange(t, srv, ask(t, srv, tc.method, tc.path, nil))
+
+			assertNotAllowed(t, status, answer)
+			assertAllow(t, header, tc.wantAllow)
+			assertNoEcho(t, answer, "things")
+			if named.ran.Load() {
+				t.Error("a named route ran on a method nobody named for its path")
+			}
+		})
+	}
+}
+
+// TestRouterServesTheMethodsItNamesOnAPathItRefuses puts the two answers of one
+// named path side by side: the methods the table names reach their own
+// handlers, and the one it does not is refused without either running.
+func TestRouterServesTheMethodsItNamesOnAPathItRefuses(t *testing.T) {
+	t.Parallel()
+
+	list := &marker{name: "list"}
+	create := &marker{name: "create"}
+	srv := gate(t,
+		httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: list},
+		httpd.Route{Method: http.MethodPost, Pattern: "/things", Handler: create},
+	)
+
+	status, answer, header := exchange(t, srv, ask(t, srv, http.MethodDelete, "/things", nil))
+	assertNotAllowed(t, status, answer)
+	assertAllow(t, header, "GET, POST")
+	if list.ran.Load() || create.ran.Load() {
+		t.Fatal("a named route ran on a method nobody named for its path")
+	}
+
+	status, answer = send(t, srv, ask(t, srv, http.MethodGet, "/things", nil))
+	assertServed(t, status, answer, "list")
+
+	status, answer = send(t, srv, ask(t, srv, http.MethodPost, "/things", strings.NewReader(`{}`)))
+	assertServed(t, status, answer, "create")
+}
+
+func TestRouterNamesNoMethodRefusingAPathNobodyNamed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{name: "a path of its own", path: "/secret-path"},
+		{name: "a path differing by a trailing slash", path: "/things/"},
+		{name: "a segment under a named path", path: "/things/42"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := gate(t, httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: &marker{name: "list"}})
+
+			status, answer, header := exchange(t, srv, ask(t, srv, http.MethodDelete, tc.path, nil))
+
+			assertRefused(t, status, answer)
+			if got := header.Values("Allow"); len(got) != 0 {
+				t.Errorf("Allow = %q, want no Allow header on a path nobody named", got)
 			}
 		})
 	}
