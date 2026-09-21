@@ -168,6 +168,32 @@ every method), a pattern `ServeMux` would read as a host, or a nil handler is
 refused at wiring; a malformed pattern, or one named twice, panics there, as
 `ServeMux` makes it.
 
+`RequireBearer` covers the routes that need a credential. A service hands its
+own context key and its own resolver from token to principal, then wraps the
+handlers it covers, so what is covered is named where the route is.
+
+```go
+var userID = authctx.NewKey[uuid.UUID]("user_id")
+
+auth := httpd.RequireBearer(userID, verify) // verify is yours, see authctx
+h, err := httpd.NewRouter(
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: auth(list)},
+    httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: status},
+)
+```
+
+The handler reads the principal back with `userID.From(r.Context())`. A covered
+request carrying no bearer credential, or one the resolver refuses, is answered
+`401 unauthenticated` with a `WWW-Authenticate: Bearer` header, and the handler
+does not run; nothing of the token, and nothing the resolver said about it,
+comes back in that answer.
+
+Coverage is exactly the set of handlers wrapped: `/status` above serves with no
+principal in its context, and a handler finding none has to treat that as
+unauthenticated. The wrap sitting on the handler is also what keeps the table's
+404 and 405 first, so no resolver is asked about a request no route matched and
+enumerating paths stays anonymous.
+
 The same package holds the JSON envelope the handlers answer in. Every body
 carries one member: the payload under `data`, or a machine-readable code and a
 human message under `error`. They are two types, so no body can hold both.
@@ -207,18 +233,9 @@ produced through the context.
 ```go
 var userID = authctx.NewKey[uuid.UUID]("user_id")
 
-func authenticate(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        token, ok := authctx.Bearer(r.Header)
-        if !ok {
-            http.Error(w, "unauthorized", http.StatusUnauthorized)
-            return
-        }
-        id, err := verify(token) // yours: the algorithm and the keys are yours
-        ...
-        next.ServeHTTP(w, r.WithContext(userID.With(r.Context(), id)))
-    })
-}
+token, ok := authctx.Bearer(r.Header) // or of a connect.Request's header
+ctx = userID.With(ctx, id)            // id is what verifying token produced
+id, ok := userID.From(r.Context())    // what the handler reads back
 ```
 
 It verifies nothing. A token's signature, claims and expiry are the service's
@@ -231,6 +248,10 @@ RFC 7235 requires and as the four hand-rolled versions this replaces did not.
 A key is a value, not a type: `NewKey` returns a distinct key per call, so a
 user id and a tenant id that are both `uuid.UUID` do not overwrite each other.
 Declare it at package level, next to the middleware that fills it.
+
+Over net/http that middleware is already written: `httpd.RequireBearer` wires
+the two ends together and picks the status code, which this package does not,
+so that a `connect.Request` caller reaches the same two ends.
 
 ## health
 

@@ -9,6 +9,11 @@
 // service names, one method and one pattern at a time, and answers every other
 // request 404 in the failure envelope below.
 //
+// RequireBearer covers the handlers of the routes that need a credential: the
+// bearer token reaches the resolver the service hands in, the principal it
+// answers rides in the request context, and a request it refuses is answered
+// 401 in that same envelope without the handler running.
+//
 // It also holds the JSON envelope those handlers answer in: WriteJSON puts the
 // payload under "data", WriteError puts a code and a message under "error", and
 // no body carries both. DecodeJSON reads a request body bounded by the byte
