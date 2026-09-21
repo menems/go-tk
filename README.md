@@ -137,6 +137,37 @@ limit, which is how a slow client holds a connection open forever.
 `WithListener` serves an already-bound listener, which is how a port-zero bind
 reports the address it got.
 
+The same package holds the JSON envelope the handlers answer in. Every body
+carries one member: the payload under `data`, or a machine-readable code and a
+human message under `error`. They are two types, so no body can hold both.
+
+```go
+httpd.WriteJSON(w, http.StatusOK, record)
+// {"data":{...}}
+
+httpd.WriteError(w, http.StatusConflict, "already_exists", "a record with that key exists")
+// {"error":{"code":"already_exists","message":"a record with that key exists"}}
+```
+
+A code is an `httpd.ErrorCode`, not a bare string, so it and the message beside
+it cannot be passed in the wrong order. The codes are the service's own;
+declare them next to the handlers that write them.
+
+```go
+var body createRequest
+if err := httpd.DecodeJSON(w, r, 64*1024, &body); err != nil {
+    log.Error("decode request", "error", err) // the answer is already written
+    return
+}
+```
+
+`DecodeJSON` reads one JSON value into a declared type, past no more bytes than
+the caller names, and refuses through that same error envelope: `413
+payload_too_large` over the limit, `400 invalid_json` for a malformed body, an
+empty one, or a second value after the first. The message is a constant per
+code, so nothing the client sent comes back to it; the error returned carries
+the cause for the one log line the handler writes.
+
 ## authctx
 
 Reads the bearer credential off a request, and carries what authenticating it

@@ -4,6 +4,11 @@
 // It takes any http.Handler, so the router is the caller's choice: a
 // chi.Router, an http.ServeMux, or a mux wrapped in h2c for ConnectRPC over
 // cleartext HTTP/2. Nothing here imports a router or a transport.
+//
+// It also holds the JSON envelope those handlers answer in: WriteJSON puts the
+// payload under "data", WriteError puts a code and a message under "error", and
+// no body carries both. DecodeJSON reads a request body bounded by the byte
+// limit its caller names, and refuses through that same error envelope.
 package httpd
 
 import (
