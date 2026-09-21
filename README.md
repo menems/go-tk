@@ -127,7 +127,8 @@ srv := httpd.New(":8080", router, httpd.WithShutdownTimeout(30*time.Second))
 ```
 
 The router is the caller's: a `chi.Router`, an `http.ServeMux`, or a mux
-wrapped in `h2c` for ConnectRPC over cleartext HTTP/2.
+wrapped in `h2c` for ConnectRPC over cleartext HTTP/2. It can also be this
+package's, below.
 
 `Run` blocks until `ctx` is cancelled, then drains in-flight requests within
 the shutdown timeout (10s, `WithShutdownTimeout`). Read, write and idle
@@ -136,6 +137,31 @@ limit, which is how a slow client holds a connection open forever.
 
 `WithListener` serves an already-bound listener, which is how a port-zero bind
 reports the address it got.
+
+`NewRouter` is the route table: a service names each route it opens by its
+method, its pattern and its handler, and gets back the `http.Handler` to serve.
+
+```go
+h, err := httpd.NewRouter(
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: list},
+    httpd.Route{Method: http.MethodPost, Pattern: "/things", Handler: create},
+    httpd.Route{Method: http.MethodGet, Pattern: "/things/{id}", Handler: show},
+)
+```
+
+A request whose method and pattern one of them names reaches that handler, with
+the pattern's values on the request (`r.PathValue("id")`). Every other request
+is answered `404 no_such_route` in the failure envelope below, whatever it
+carried: nothing of it is read, and nothing of it or of the table comes back in
+the answer. A path differing from a named one by a trailing slash, a repeated
+slash or a `..` segment is one nobody named, so it is refused too, where an
+`http.ServeMux` would redirect towards the route beside it.
+
+Patterns are `ServeMux`'s own, minus the method and the host, so there is one
+syntax and each route is named once. A route with no method (it would answer
+every method), a pattern `ServeMux` would read as a host, or a nil handler is
+refused at wiring; a malformed pattern, or one named twice, panics there, as
+`ServeMux` makes it.
 
 The same package holds the JSON envelope the handlers answer in. Every body
 carries one member: the payload under `data`, or a machine-readable code and a

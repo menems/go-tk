@@ -5,6 +5,10 @@
 // chi.Router, an http.ServeMux, or a mux wrapped in h2c for ConnectRPC over
 // cleartext HTTP/2. Nothing here imports a router or a transport.
 //
+// That router can also be this package's: NewRouter serves the routes a
+// service names, one method and one pattern at a time, and answers every other
+// request 404 in the failure envelope below.
+//
 // It also holds the JSON envelope those handlers answer in: WriteJSON puts the
 // payload under "data", WriteError puts a code and a message under "error", and
 // no body carries both. DecodeJSON reads a request body bounded by the byte
