@@ -308,13 +308,14 @@ left of it, and told how much that is. Its budgets live in the memory of the
 process serving the requests, so three replicas meter three cadences of that
 ceiling and not one; a budget shared across them is a store, its module and its
 dependency, and which one stays the service's decision behind the `Counter`
-seam. What it holds grows with the distinct keys seen inside one window, an
-entry being forgotten once its window has passed, so a caller rotating its key
-faster than the window drives that growth and a service needing a harder bound
-hands in a counter of its own. A ceiling below one call, and a window of zero or
-less, are refused at wiring under an error naming the value: the first meters a
-route into a closed one, the second names no moment to send a refused caller
-back to.
+seam. What it holds grows with the distinct keys seen inside two windows at
+most, an entry being forgotten by a sweep that runs at most once per window
+rather than at the instant that key's own window passed, so a caller rotating
+its key faster than the window drives that growth and a service needing a
+harder bound hands in a counter of its own. A ceiling below one call, and a
+window of zero or less, are refused at wiring under an error naming the value:
+the first meters a route into a closed one, the second names no moment to send
+a refused caller back to.
 
 `GrantOrigins` lets a browser at an origin the service listed read the answers
 this handler gives. The service names one policy at wiring, the origins it

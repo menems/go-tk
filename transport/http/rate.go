@@ -166,10 +166,11 @@ func retryAfter(d time.Duration) int64 {
 // one. That is the trade of the counter being a seam: a budget shared across
 // replicas is a store, its module and its dependency, and which one is the
 // service's decision, taken behind Counter and not here. What this one holds
-// grows with the distinct keys seen inside one window, an entry being
-// forgotten once the window it belongs to has passed, so a caller rotating its
-// key faster than the window drives that growth and a service needing a harder
-// bound hands in a counter of its own.
+// grows with the distinct keys seen inside two windows at most, an entry being
+// forgotten by a sweep that runs at most once per window rather than at the
+// instant that key's own window passed, so a caller rotating its key faster
+// than the window drives that growth and a service needing a harder bound
+// hands in a counter of its own.
 //
 // A ceiling below one call, and a window of zero or less, are refused here
 // rather than on the first request, under an error naming the value: the first
