@@ -19,11 +19,12 @@
 // it, and a caller holding it nowhere is answered 403 in that same envelope,
 // again without the handler running.
 //
-// GrantOrigins lets a browser at an origin the service listed read the answers
-// the table gives: it wraps that table rather than a handler, answers nothing
-// of its own, and adds the grant to whatever was answered, a refusal included.
-// An origin the service listed nowhere reads nothing it would not have read
-// without saying where it came from.
+// GrantOrigins names, in one value, the policy a browser meets, and that value
+// has two halves: Grant.Wrap sits in front of the table, answers nothing of its
+// own and adds the grant to whatever was answered, a refusal included, while
+// Grant.Router is the table, answering the preflight of a path it names out of
+// the methods it names there. An origin the service listed nowhere reads
+// nothing it would not have read without saying where it came from.
 //
 // It also holds the JSON envelope those handlers answer in: WriteJSON puts the
 // payload under "data", WriteError puts a code and a message under "error", and

@@ -247,18 +247,44 @@ authenticated, `404`, `405` and `401` stay exactly what the two above left
 them, and `/status` above is covered while demanding no right.
 
 `GrantOrigins` lets a browser at an origin the service listed read the answers
-this handler gives. The list is named at wiring, and the wrap sits in front of
-the table, not on a handler.
+this handler gives. The service names one policy at wiring, the origins it
+grants and the request headers it allows, and that one value has two halves:
+`Wrap`, in front of the table, and `Router`, the table itself.
 
 ```go
-grant, err := httpd.GrantOrigins("https://app.example.test")
-srv := httpd.New(":8080", grant(h))
+grant, err := httpd.GrantOrigins(
+    []string{"https://app.example.test"},
+    []string{"Content-Type"},
+)
+h, err := grant.Router(
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: list},
+    httpd.Route{Method: http.MethodPost, Pattern: "/things", Handler: create},
+)
+srv := httpd.New(":8080", grant.Wrap(h))
 ```
 
-It answers nothing of its own: it adds headers to whatever the table answered,
-so a listed origin reads the table's `404` and `405`, and a covered route's
-`401` and `403`, as it reads a handler's own answer. Listing an origin is
-trusting it with what those refusals say.
+`Wrap` answers nothing of its own: it adds headers to whatever the table
+answered, so a listed origin reads the table's `404` and `405`, and a covered
+route's `401` and `403`, as it reads a handler's own answer. Listing an origin
+is trusting it with what those refusals say.
+
+`Router` is `NewRouter`'s table, answering besides it the preflight a browser
+sends before a request it may not send blind. A preflight is an answer and not
+a header, which is why the table gives it: one asked on a path no route names
+meets that table's own `404`, and one on a covered route is answered before any
+wrap on a handler runs, so no resolver is asked and no `401` is given to a
+request that carries no credential by construction. A table built with
+`NewRouter` and wrapped with `Wrap` answers every preflight `405`, which is
+every browser broken on anything but a simple request.
+
+An `OPTIONS` naming the method it means to send, on a path the table names, is
+answered `204` with no body, `Access-Control-Allow-Methods` naming exactly the
+methods that path names and `Access-Control-Allow-Headers` naming exactly the
+request headers the service listed. The method it asked about is not read: it
+is told the list and decides for itself, which is the same set the `405` above
+already names to anyone. An `OPTIONS` carrying no such question is no
+preflight, so it is refused `405` like any method nobody named, with `OPTIONS`
+in the `Allow` header beside them, that path now answering it.
 
 An origin is granted by being equal to an entry of the list, whole. Nothing
 splits it, lowercases it or matches a suffix of it, so a listed origin under
@@ -268,7 +294,8 @@ list, and never a wildcard.
 
 A request whose origin is on the list nowhere, and one carrying no `Origin` at
 all, get the answer they would have got without that header: the same status,
-the same body, no grant. `Origin` is a browser's own statement about itself,
+the same body, no grant. Its preflight gets the same `204`, naming no method,
+no header and no origin. `Origin` is a browser's own statement about itself,
 which anything that is not a browser forges in one header, so refusing on it
 gates nobody, while a same-origin `POST` sends one too and would meet that
 refusal from the service's own page. The cost is that a caller whose origin was
@@ -283,7 +310,11 @@ strength of this list.
 An entry that is not exactly a scheme and a host is refused at wiring, naming
 that entry, and nothing is served: a wildcard, an empty entry, a path, a query,
 a trailing slash or a missing scheme all name something no `Origin` header
-equals, so listing one grants nobody while reading as if it did.
+equals, so listing one grants nobody while reading as if it did. A request
+header entry that is not one header name is refused there too: the list is
+written back as one comma-separated value, so an entry carrying a comma, a
+blank or a line break would name headers the service never listed. The two
+rules also catch the two lists handed over in the wrong order.
 
 The same package holds the JSON envelope the handlers answer in. Every body
 carries one member: the payload under `data`, or a machine-readable code and a
