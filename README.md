@@ -246,6 +246,45 @@ nothing is asked about rights for a request no route matched or no credential
 authenticated, `404`, `405` and `401` stay exactly what the two above left
 them, and `/status` above is covered while demanding no right.
 
+`GrantOrigins` lets a browser at an origin the service listed read the answers
+this handler gives. The list is named at wiring, and the wrap sits in front of
+the table, not on a handler.
+
+```go
+grant, err := httpd.GrantOrigins("https://app.example.test")
+srv := httpd.New(":8080", grant(h))
+```
+
+It answers nothing of its own: it adds headers to whatever the table answered,
+so a listed origin reads the table's `404` and `405`, and a covered route's
+`401` and `403`, as it reads a handler's own answer. Listing an origin is
+trusting it with what those refusals say.
+
+An origin is granted by being equal to an entry of the list, whole. Nothing
+splits it, lowercases it or matches a suffix of it, so a listed origin under
+another scheme or another port, or one carrying a trailing slash, is an origin
+nobody listed. The answer then names that one origin and nothing else of the
+list, and never a wildcard.
+
+A request whose origin is on the list nowhere, and one carrying no `Origin` at
+all, get the answer they would have got without that header: the same status,
+the same body, no grant. `Origin` is a browser's own statement about itself,
+which anything that is not a browser forges in one header, so refusing on it
+gates nobody, while a same-origin `POST` sends one too and would meet that
+refusal from the service's own page. The cost is that a caller whose origin was
+not listed is told so by an absent header alone.
+
+Every answer carries `Vary: Origin`, granted or not: the headers depend on
+which origin asked, and without it a shared cache hands one origin's grant to
+the next caller. No answer carries `Access-Control-Allow-Credentials` either, so
+a cookie or a credential the browser holds is never granted to a page on the
+strength of this list.
+
+An entry that is not exactly a scheme and a host is refused at wiring, naming
+that entry, and nothing is served: a wildcard, an empty entry, a path, a query,
+a trailing slash or a missing scheme all name something no `Origin` header
+equals, so listing one grants nobody while reading as if it did.
+
 The same package holds the JSON envelope the handlers answer in. Every body
 carries one member: the payload under `data`, or a machine-readable code and a
 human message under `error`. They are two types, so no body can hold both.
