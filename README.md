@@ -13,6 +13,7 @@ transport/http/          run an http.Handler with timeouts and a graceful stop
 authctx/                 read the bearer, carry the principal
 health/                  liveness and readiness probes
 config/                  read configuration at boot
+crypto/password/         hold a password in a type nothing reads it out of
 storage/postgres/        a pgxpool.Pool from a DSN
 storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
@@ -35,14 +36,14 @@ another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config` | none |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `crypto/password` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
 | `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config
+go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, crypto/password
 go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
 go get github.com/menems/go-tk/storage/postgres/migrate  # adds golang-migrate
 go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
@@ -500,6 +501,53 @@ Error messages name the key and never the value, because a malformed
 Only a string can be `Required`. The values with no sensible default are DSNs,
 endpoints and secrets; a port or a timeout that reaches production unset wants
 a default, not a boot failure.
+
+## crypto/password
+
+Holds a plaintext password in a carrier nothing reads it out of. Stdlib only.
+
+```go
+type login struct {
+    Email    string            `json:"email"`
+    Password password.Password `json:"password"`
+}
+
+pw, err := password.New(candidate)           // ErrEmpty on ""
+fmt.Sprintf("%v %s %q %+v %#v", pw, /*…*/)   // [REDACTED], every verb
+json.Marshal(pw)                             // "[REDACTED]"
+slog.Info("login", slog.Any("password", pw)) // password=[REDACTED]
+pw.Equal(confirmation)                       // constant time, neither plaintext leaves
+```
+
+A login body decodes into the carrier directly, so the plaintext is inside it
+from the moment it enters the process, instead of passing through a plain
+string field in a struct someone prints. That asymmetry is the whole point:
+unmarshalling reads the secret, marshalling writes the redaction.
+
+Containment is a property of the type, not a convention to remember. The
+plaintext sits behind one indirection, so a struct holding a carrier in an
+unexported field cannot have it reflected out either: `fmt` cannot call a
+method on a value it reaches through an unexported field, so it reads that
+value's fields, and a pointer prints as an address where a string would print
+the secret. Every other surface is closed by the hook Go offers for it,
+`String` for the verbs `fmt` routes through it, `GoString` for `%#v`,
+`MarshalJSON` and `MarshalText` for an encoder, `LogValue` for an `slog`
+handler, and each answers the same fixed redaction.
+
+Marshalling redacts instead of failing. A service that puts a password in an
+outgoing payload has a bug, and a toolkit answering it with an error decides an
+outage on that service's behalf; what it costs is that the bug ships a redacted
+member rather than stopping at the boundary. The round trip through text is
+lossy for the same reason.
+
+A carrier holding nothing matches nothing. `New("")` and either decoding of an
+empty value answer `ErrEmpty`, a JSON `null` and a JSON value that is not a
+string are refused too, and the zero value redacts like any other, so nothing
+derived from a carrier nobody filled can verify.
+
+The plaintext is not erased from memory, and nothing here pretends otherwise: a
+Go string is immutable and copied by the collector. That is the bound a service
+holding one for longer than a request should know.
 
 ## storage/postgres
 
