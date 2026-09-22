@@ -206,6 +206,42 @@ unauthenticated. The wrap sitting on the handler is also what keeps the table's
 404 and 405 first, so no resolver is asked about a request no route matched and
 enumerating paths stays anonymous.
 
+`RequireRight` closes a route on a right its caller must hold. The service
+names one right per wrap and hands the check that answers whether a principal
+holds it; the wrap sits on the handler, inside the bearer wrap.
+
+```go
+listing := httpd.RequireRight(userID, scopeList, allowed) // allowed is yours
+h, err := httpd.NewRouter(
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: auth(listing(list))},
+    httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: auth(status)},
+)
+```
+
+The right is the service's own type, and this package never reads it: it holds
+no right table and grants nothing, so a check that answers wrongly authorizes
+wrongly. A caller holding the right nowhere is answered `403 forbidden` and the
+handler does not run; so is a request reaching the wrap with no principal,
+which is a route wired without `RequireBearer` above it, because a wiring
+mistake must not be an open door.
+
+That refusal is one body under one code, whatever right was demanded and
+whatever the caller does hold, with no `WWW-Authenticate` header: a challenge
+invites a retry, and no credential this caller can present makes the request go
+through. So probing a table one route at a time tells a caller it may not make
+the request, never which right would have let it.
+
+The check answers true or false and nothing else, so one that could not reach a
+verdict answers false and authorization fails closed. That is the opposite
+trade from the resolver above, which tells a refusal from an outage; it is made
+here because a right is asked about per route and per request, and a 500 there
+turns every such outage into a status the caller retries.
+
+The order a request meets is the table, then the bearer, then the right. So
+nothing is asked about rights for a request no route matched or no credential
+authenticated, `404`, `405` and `401` stay exactly what the two above left
+them, and `/status` above is covered while demanding no right.
+
 The same package holds the JSON envelope the handlers answer in. Every body
 carries one member: the payload under `data`, or a machine-readable code and a
 human message under `error`. They are two types, so no body can hold both.
