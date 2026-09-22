@@ -220,22 +220,26 @@ h, err := httpd.NewRouter(
 
 The right is the service's own type, and this package never reads it: it holds
 no right table and grants nothing, so a check that answers wrongly authorizes
-wrongly. A caller holding the right nowhere is answered `403 forbidden` and the
-handler does not run; so is a request reaching the wrap with no principal,
-which is a route wired without `RequireBearer` above it, because a wiring
-mistake must not be an open door.
+wrongly. A caller the check judged and refused is answered `403 forbidden` and
+the handler does not run.
 
-That refusal is one body under one code, whatever right was demanded and
-whatever the caller does hold, with no `WWW-Authenticate` header: a challenge
-invites a retry, and no credential this caller can present makes the request go
-through. So probing a table one route at a time tells a caller it may not make
-the request, never which right would have let it.
+The check answers a verdict, or an error saying it could not reach one. That
+error is the check failing rather than judging: `500 auth_unavailable`, the
+same code the resolver's own failure writes, handler still not run. A request
+reaching the wrap with no principal lands on that same 500, nothing having
+judged it either; that is a route wired without `RequireBearer` above it, and a
+`403` there would tell a caller it lacks a right when what it met was a mistake
+in the table, and leave an operator unable to tell that route from one closed
+on purpose. Both answers deny the request, and a client tells the one no
+credential of its own fixes from the one it should retry by the status and the
+code alone.
 
-The check answers true or false and nothing else, so one that could not reach a
-verdict answers false and authorization fails closed. That is the opposite
-trade from the resolver above, which tells a refusal from an outage; it is made
-here because a right is asked about per route and per request, and a 500 there
-turns every such outage into a status the caller retries.
+Neither refusal carries a `WWW-Authenticate` header: a challenge invites a
+retry, and no credential this caller can present makes the request go through.
+Each is one fixed body under one code, the same whatever right was demanded and
+whatever the caller does hold, naming neither the principal, nor the right, nor
+anything the check said. So probing a table one route at a time tells a caller
+it may not make the request, never which right would have let it.
 
 The order a request meets is the table, then the bearer, then the right. So
 nothing is asked about rights for a request no route matched or no credential

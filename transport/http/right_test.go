@@ -2,6 +2,7 @@ package httpd_test
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -17,23 +18,33 @@ import (
 // service's type, and this package never reads it.
 type right string
 
-// The rights the table below demands, and a third the caller holds while being
-// refused. All three carry a marker, so an answer repeating any of them is
-// caught by the no-echo assertions.
+// The rights the table below demands, a third the caller holds while being
+// refused, and a fourth the check cannot answer about at all. All four carry a
+// marker, so an answer repeating any of them is caught by the no-echo
+// assertions.
 const (
-	rightList  right = "marker-things-list"
-	rightPurge right = "marker-things-purge"
-	rightHeld  right = "marker-things-else"
+	rightList   right = "marker-things-list"
+	rightPurge  right = "marker-things-purge"
+	rightHeld   right = "marker-things-else"
+	rightBroken right = "marker-things-broken"
 )
 
-// The refusal a route demanding a right gives, written here as the literal a
-// client reads.
-const messageForbidden = "this credential does not allow this request"
+// The two refusals a route demanding a right gives, written here as the
+// literals a client reads.
+const (
+	messageForbidden        = "this credential does not allow this request"
+	messageRightUnavailable = "this service could not answer whether this request is allowed"
+)
+
+// The text the holder puts in its own error, and what the no-echo assertions
+// look for in the answer that request gets: the check's own innards.
+const checkFailureText = "marker-right-store unreachable"
 
 // holder stands for the service's own right table: it answers whether the
-// principal it is handed holds the right the route demanded. It records how
-// many times it was asked anything, so a request that must reach no check can
-// be checked to have reached none.
+// principal it is handed holds the right the route demanded, and answers one
+// right with a failure of its own instead of a verdict. It records how many
+// times it was asked anything, so a request that must reach no check can be
+// checked to have reached none.
 //
 // held is written at construction and only read afterwards, so the parallel
 // tests below share nothing through it.
@@ -42,19 +53,25 @@ type holder struct {
 	calls atomic.Int64
 }
 
-func (h *holder) holds(_ context.Context, _ principal, r right) bool {
+func (h *holder) holds(_ context.Context, _ principal, r right) (bool, error) {
 	h.calls.Add(1)
-	return h.held[r]
+	if r == rightBroken {
+		// Not a verdict: this stands for the right store being down or its
+		// rows being unreadable, neither of which is the caller's fault.
+		return false, errors.New(checkFailureText)
+	}
+	return h.held[r], nil
 }
 
-// demanding is one table of three covered routes: two demanding two different
-// rights, one demanding none, each with its own handler, plus the holder the
-// two demands were given.
+// demanding is one table of four covered routes: three demanding three
+// different rights, one demanding none, each with its own handler, plus the
+// holder the three demands were given.
 type demanding struct {
 	srv    *httptest.Server
 	holder *holder
 	list   *reader
 	purge  *reader
+	broken *reader
 	open   *reader
 }
 
@@ -72,7 +89,7 @@ func demand(t *testing.T, held ...right) demanding {
 		h.held[r] = true
 	}
 	auth := httpd.RequireBearer(principalKey, (&resolver{}).resolve)
-	list, purge, open := &reader{}, &reader{}, &reader{}
+	list, purge, broken, open := &reader{}, &reader{}, &reader{}, &reader{}
 	srv := gate(t,
 		httpd.Route{
 			Method:  http.MethodGet,
@@ -84,25 +101,56 @@ func demand(t *testing.T, held ...right) demanding {
 			Pattern: "/things",
 			Handler: auth(httpd.RequireRight(principalKey, rightPurge, h.holds)(purge)),
 		},
+		httpd.Route{
+			Method:  http.MethodPost,
+			Pattern: "/things",
+			Handler: auth(httpd.RequireRight(principalKey, rightBroken, h.holds)(broken)),
+		},
 		httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: auth(open)},
 	)
 
-	return demanding{srv: srv, holder: h, list: list, purge: purge, open: open}
+	return demanding{srv: srv, holder: h, list: list, purge: purge, broken: broken, open: open}
 }
 
-// assertForbidden checks the answer is the wrap's 403 envelope, names none of
-// the rights in play and nothing of the principal, and carries no challenge: a
-// scheme to retry under would invite a retry there is no credential for.
+// assertSaysNothingOfTheCheck checks an answer names none of the rights in
+// play, nothing of the principal, and nothing the check itself said.
+func assertSaysNothingOfTheCheck(t *testing.T, answer []byte) {
+	t.Helper()
+
+	for _, r := range []right{rightList, rightPurge, rightHeld, rightBroken} {
+		assertNoEcho(t, answer, string(r))
+	}
+	assertNoEcho(t, answer, "owner")
+	assertNoEcho(t, answer, checkFailureText)
+}
+
+// assertForbidden checks the answer is the wrap's 403 envelope, says nothing
+// of the check, and carries no challenge: a scheme to retry under would invite
+// a retry there is no credential for.
 func assertForbidden(t *testing.T, status int, answer []byte, header http.Header) {
 	t.Helper()
 
 	assertRefusal(t, status, answer, http.StatusForbidden, httpd.CodeForbidden, messageForbidden)
-	for _, r := range []right{rightList, rightPurge, rightHeld} {
-		assertNoEcho(t, answer, string(r))
-	}
-	assertNoEcho(t, answer, "owner")
+	assertSaysNothingOfTheCheck(t, answer)
+	assertNoChallenge(t, header)
+}
+
+// assertRightUnavailable checks the answer is the wrap's 500 envelope, under
+// the code this package already writes for a verdict it could not reach, and
+// says nothing of the check either.
+func assertRightUnavailable(t *testing.T, status int, answer []byte, header http.Header) {
+	t.Helper()
+
+	assertRefusal(t, status, answer, http.StatusInternalServerError, httpd.CodeAuthUnavailable, messageRightUnavailable)
+	assertSaysNothingOfTheCheck(t, answer)
+	assertNoChallenge(t, header)
+}
+
+func assertNoChallenge(t *testing.T, header http.Header) {
+	t.Helper()
+
 	if got := header.Values("WWW-Authenticate"); len(got) != 0 {
-		t.Errorf("WWW-Authenticate = %q, want none on a refusal no credential answers", got)
+		t.Errorf("WWW-Authenticate = %q, want none on an answer no credential changes", got)
 	}
 }
 
@@ -145,6 +193,62 @@ func TestRightRefusesACallerHoldingItNowhere(t *testing.T) {
 	}
 }
 
+// TestRightTellsACallerHoldingNothingFromACheckAnsweringNothing puts the two
+// answers a right check can get side by side: a client branches on the status
+// and the code, and on nothing else, because nothing of the right demanded, of
+// the principal, or of what the check said is in either answer. The caller is
+// the same one in both rows, so what differs is the check's own answer.
+func TestRightTellsACallerHoldingNothingFromACheckAnsweringNothing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		method      string
+		wantStatus  int
+		wantCode    httpd.ErrorCode
+		wantMessage string
+		handler     func(demanding) *reader
+	}{
+		{
+			name:        "a right its caller holds nowhere",
+			method:      http.MethodGet,
+			wantStatus:  http.StatusForbidden,
+			wantCode:    httpd.CodeForbidden,
+			wantMessage: messageForbidden,
+			handler:     func(d demanding) *reader { return d.list },
+		},
+		{
+			name:        "a right its check could not answer about",
+			method:      http.MethodPost,
+			wantStatus:  http.StatusInternalServerError,
+			wantCode:    httpd.CodeAuthUnavailable,
+			wantMessage: messageRightUnavailable,
+			handler:     func(d demanding) *reader { return d.broken },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := demand(t, rightHeld)
+
+			req := withBearer(ask(t, d.srv, tc.method, "/things", nil), "Bearer "+goodToken)
+			status, answer, header := exchange(t, d.srv, req)
+
+			assertRefusal(t, status, answer, tc.wantStatus, tc.wantCode, tc.wantMessage)
+			assertSaysNothingOfTheCheck(t, answer)
+			assertNoChallenge(t, header)
+			if tc.handler(d).ran.Load() {
+				t.Error("the covered handler ran on a request the wrap did not allow")
+			}
+			if got := d.holder.calls.Load(); got != 1 {
+				t.Errorf("holder asked %d times, want 1", got)
+			}
+		})
+	}
+}
+
 // TestRightRefusesTheSameWhateverRightItDemanded puts the two refusals side by
 // side: a caller learns from them that it may not make the request, and not
 // which right would have let it, so probing a service's table one route at a
@@ -174,7 +278,7 @@ func TestRightRefusesTheSameWhateverRightItDemanded(t *testing.T) {
 }
 
 // TestRightLeavesARouteDemandingNoneServingItsCaller pins coverage as exactly
-// the set of handlers wrapped: the caller refused on the two routes above is
+// the set of handlers wrapped: the caller refused on the routes above is
 // served by the route beside them, whose handler still reads the principal the
 // bearer wrap put in its context.
 func TestRightLeavesARouteDemandingNoneServingItsCaller(t *testing.T) {
@@ -228,11 +332,14 @@ func TestRightIsAskedNothingBeforeTheTableAndTheBearerAnswered(t *testing.T) {
 	})
 }
 
-// TestRightRefusesAWrapItsServiceLeftWithNoPrincipal pins the wrap failing
-// closed: a route wired without RequireBearer above it reaches this wrap with
-// no principal to hand the check, and serving it would make a wiring mistake
-// an open door.
-func TestRightRefusesAWrapItsServiceLeftWithNoPrincipal(t *testing.T) {
+// TestRightAnswersAWrapLeftWithNoPrincipalAsACheckAnsweringNothing pins the
+// wrap failing closed on a route wired without RequireBearer above it: no
+// principal reaches it, so no check is asked and no verdict exists, and the
+// answer is the one a check answering nothing gets rather than the 403 of a
+// caller that was judged. A caller told 403 there would read a wiring mistake
+// as a right it lacks, and an operator would read it as a route closed on
+// purpose.
+func TestRightAnswersAWrapLeftWithNoPrincipalAsACheckAnsweringNothing(t *testing.T) {
 	t.Parallel()
 
 	h := &holder{held: map[right]bool{rightList: true}}
@@ -246,11 +353,20 @@ func TestRightRefusesAWrapItsServiceLeftWithNoPrincipal(t *testing.T) {
 	req := withBearer(ask(t, srv, http.MethodGet, "/things", nil), "Bearer "+goodToken)
 	status, answer, header := exchange(t, srv, req)
 
-	assertForbidden(t, status, answer, header)
+	assertRightUnavailable(t, status, answer, header)
 	if bare.ran.Load() {
 		t.Error("the covered handler ran on a request carrying no principal")
 	}
 	if got := h.calls.Load(); got != 0 {
 		t.Errorf("holder asked %d times with no principal to hand it, want 0", got)
+	}
+
+	// The two are one answer, so a caller cannot tell a route left outside the
+	// bearer wrap from a right store that is down.
+	d := demand(t, rightHeld)
+	_, failed, _ := exchange(t, d.srv,
+		withBearer(ask(t, d.srv, http.MethodPost, "/things", nil), "Bearer "+goodToken))
+	if string(answer) != string(failed) {
+		t.Errorf("answers differ: %s and %s", answer, failed)
 	}
 }
