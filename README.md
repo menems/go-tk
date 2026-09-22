@@ -293,6 +293,29 @@ runs. A service whose key is readable from the request alone can place it
 outside the bearer wrap instead, the one position where a flood of unresolvable
 tokens is metered before the resolver is asked.
 
+`CountWithin` is the counter this package ships, the one of a single process: a
+ceiling of calls per caller key inside a window, with the clock a parameter, so
+a service passes `time.Now` and a test passes its own.
+
+```go
+count, err := httpd.CountWithin[callerKey](100, time.Minute, time.Now)
+meter := httpd.LimitRate(callerOf, count) // callerOf is yours
+```
+
+A key's window opens on that key's own first call, not on a boundary the
+package picks: the caller is served the ceiling of the window, refused what is
+left of it, and told how much that is. Its budgets live in the memory of the
+process serving the requests, so three replicas meter three cadences of that
+ceiling and not one; a budget shared across them is a store, its module and its
+dependency, and which one stays the service's decision behind the `Counter`
+seam. What it holds grows with the distinct keys seen inside one window, an
+entry being forgotten once its window has passed, so a caller rotating its key
+faster than the window drives that growth and a service needing a harder bound
+hands in a counter of its own. A ceiling below one call, and a window of zero or
+less, are refused at wiring under an error naming the value: the first meters a
+route into a closed one, the second names no moment to send a refused caller
+back to.
+
 `GrantOrigins` lets a browser at an origin the service listed read the answers
 this handler gives. The service names one policy at wiring, the origins it
 grants and the request headers it allows, and that one value has two halves:

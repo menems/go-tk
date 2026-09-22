@@ -410,3 +410,224 @@ func TestRateIsAskedNothingBeforeTheTableAnswered(t *testing.T) {
 		}
 	})
 }
+
+// clock is the service's own, handed to the counter this package ships: the
+// window it meters over passes when a test says it does, so no test here names
+// a window short enough to wait out. It is read from the goroutines serving
+// the requests and written from the test's own, hence the lock.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newClock() *clock {
+	return &clock{t: time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// cadenced meters one route by the counter this package ships, built from the
+// ceiling and the window a service would name and from the test's own clock.
+// This is the seam: a consumer meets that counter through the handler NewRouter
+// returns, one served request at a time.
+func cadenced(t *testing.T, ceiling int, window time.Duration, now func() time.Time) *httptest.Server {
+	t.Helper()
+
+	count, err := httpd.CountWithin[callerKey](ceiling, window, now)
+	if err != nil {
+		t.Fatalf("CountWithin: %v", err)
+	}
+	return gate(t, httpd.Route{
+		Method:  http.MethodGet,
+		Pattern: "/things",
+		Handler: httpd.LimitRate(callerOf, count)(&marker{name: "things"}),
+	})
+}
+
+// TestCountWithinServesTheCeilingOfAWindowAndRefusesTheNext is the acceptance:
+// a caller sending as many requests as the ceiling the service named is served
+// every one of them, the next one inside that same window is refused, and the
+// moment it is sent back to lies inside that window and never past it.
+func TestCountWithinServesTheCeilingOfAWindowAndRefusesTheNext(t *testing.T) {
+	t.Parallel()
+
+	c := newClock()
+	srv := cadenced(t, 3, time.Minute, c.now)
+
+	for range 3 {
+		status, answer := send(t, srv, asking(t, srv, "/things", oneCaller))
+		assertServed(t, status, answer, "things")
+	}
+
+	status, answer, header := exchange(t, srv, asking(t, srv, "/things", oneCaller))
+
+	// The window opened on the first of the three and no time has passed
+	// since, so what this caller is told to wait is the window itself, 60
+	// seconds, and nothing longer than it.
+	assertTooManyRequests(t, status, answer, header, "60")
+
+	c.advance(20 * time.Second)
+	status, answer, header = exchange(t, srv, asking(t, srv, "/things", oneCaller))
+
+	// Still inside that window, and what is left of it is what the caller is
+	// now told: 40 seconds, the window less the 20 it has already spent.
+	assertTooManyRequests(t, status, answer, header, "40")
+}
+
+// TestCountWithinHoldsOneBudgetPerCaller pins the ceiling as each caller's and
+// not the route's: the caller that spent its window's calls is refused while
+// the one beside it, under a key of its own, is served.
+func TestCountWithinHoldsOneBudgetPerCaller(t *testing.T) {
+	t.Parallel()
+
+	c := newClock()
+	srv := cadenced(t, 1, time.Minute, c.now)
+
+	status, answer := send(t, srv, asking(t, srv, "/things", oneCaller))
+	assertServed(t, status, answer, "things")
+
+	status, answer, header := exchange(t, srv, asking(t, srv, "/things", oneCaller))
+	assertTooManyRequests(t, status, answer, header, "60")
+
+	status, answer = send(t, srv, asking(t, srv, "/things", otherCaller))
+	assertServed(t, status, answer, "things")
+}
+
+// TestCountWithinServesACallerAgainOnceItsWindowHasPassed pins the other half
+// of a cadence: a refusal lasts that window and not longer, so the caller that
+// comes back on the second it was told finds the calls it was promised.
+func TestCountWithinServesACallerAgainOnceItsWindowHasPassed(t *testing.T) {
+	t.Parallel()
+
+	c := newClock()
+	srv := cadenced(t, 1, time.Minute, c.now)
+
+	status, answer := send(t, srv, asking(t, srv, "/things", oneCaller))
+	assertServed(t, status, answer, "things")
+
+	status, answer, header := exchange(t, srv, asking(t, srv, "/things", oneCaller))
+	assertTooManyRequests(t, status, answer, header, "60")
+
+	c.advance(time.Minute)
+
+	status, answer = send(t, srv, asking(t, srv, "/things", oneCaller))
+	assertServed(t, status, answer, "things")
+}
+
+// TestCountWithinServesExactlyTheCeilingOfConcurrentRequests pins the counter
+// under the race detector: one caller sending a whole window's worth at once
+// is served the ceiling of them and refused the rest, no two requests taking
+// the same call.
+func TestCountWithinServesExactlyTheCeilingOfConcurrentRequests(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ceiling     = 5
+		sent        = 40
+		wantRefused = sent - ceiling
+	)
+
+	c := newClock()
+	srv := cadenced(t, ceiling, time.Minute, c.now)
+
+	type outcome struct {
+		status int
+		err    error
+	}
+	start := make(chan struct{})
+	outcomes := make(chan outcome, sent)
+	var wg sync.WaitGroup
+	for range sent {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/things", nil)
+			if err != nil {
+				outcomes <- outcome{err: err}
+				return
+			}
+			req.Header.Set(headerCaller, string(oneCaller))
+
+			<-start
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				outcomes <- outcome{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			outcomes <- outcome{status: resp.StatusCode}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(outcomes)
+
+	served, refused := 0, 0
+	for got := range outcomes {
+		switch {
+		case got.err != nil:
+			t.Errorf("do: %v", got.err)
+		case got.status == http.StatusOK:
+			served++
+		case got.status == http.StatusTooManyRequests:
+			refused++
+		default:
+			t.Errorf("status = %d, want %d or %d", got.status, http.StatusOK, http.StatusTooManyRequests)
+		}
+	}
+	if served != ceiling {
+		t.Errorf("served %d requests, want %d", served, ceiling)
+	}
+	if refused != wantRefused {
+		t.Errorf("refused %d requests, want %d", refused, wantRefused)
+	}
+}
+
+// TestCountWithinRefusesACadenceNothingCanBeMeteredBy pins the wiring check: a
+// ceiling of no call and a window of no time are refused where the service
+// names them, under an error naming the value it named, and no counter is
+// handed back to serve anything with.
+func TestCountWithinRefusesACadenceNothingCanBeMeteredBy(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		ceiling int
+		window  time.Duration
+		names   string
+	}{
+		{name: "a ceiling of no call at all", ceiling: 0, window: time.Minute, names: "0"},
+		{name: "a ceiling below zero", ceiling: -3, window: time.Minute, names: "-3"},
+		{name: "a window of no time at all", ceiling: 1, window: 0, names: "0s"},
+		{name: "a window already past", ceiling: 1, window: -90 * time.Second, names: "-1m30s"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			count, err := httpd.CountWithin[callerKey](tc.ceiling, tc.window, time.Now)
+
+			if err == nil {
+				t.Fatal("a cadence nothing can be metered by was accepted at wiring")
+			}
+			if !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("error = %q, want it to name %q", err, tc.names)
+			}
+			if count != nil {
+				t.Error("a refused cadence handed back a counter to serve requests with")
+			}
+		})
+	}
+}

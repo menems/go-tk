@@ -2,8 +2,10 @@ package httpd
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -146,4 +148,104 @@ func retryAfter(d time.Duration) int64 {
 		seconds++
 	}
 	return seconds
+}
+
+// CountWithin builds the Counter of a single process: ceiling calls for each
+// caller key inside window, and the window of a key opening on that key's own
+// first call rather than on a boundary this package picks.
+//
+//	count, err := httpd.CountWithin[callerKey](100, time.Minute, time.Now)
+//	meter := httpd.LimitRate(callerOf, count) // callerOf is yours
+//
+// now is the service's clock, time.Now everywhere but a test: nothing here
+// reads a clock of its own, so a test meters over a window of minutes and
+// passes it rather than waiting one out.
+//
+// Its budgets live in the memory of the process serving the requests, so a
+// service on three replicas meters three cadences of ceiling calls and not
+// one. That is the trade of the counter being a seam: a budget shared across
+// replicas is a store, its module and its dependency, and which one is the
+// service's decision, taken behind Counter and not here. What this one holds
+// grows with the distinct keys seen inside one window, an entry being
+// forgotten once the window it belongs to has passed, so a caller rotating its
+// key faster than the window drives that growth and a service needing a harder
+// bound hands in a counter of its own.
+//
+// A ceiling below one call, and a window of zero or less, are refused here
+// rather than on the first request, under an error naming the value: the first
+// meters a route into a closed one, and the second names no moment a refused
+// caller could come back at.
+func CountWithin[K comparable](ceiling int, window time.Duration, now func() time.Time) (Counter[K], error) {
+	if ceiling < 1 {
+		return nil, fmt.Errorf("httpd: ceiling %d: a cadence granting no call at all refuses every request, which is a closed route and not a rate", ceiling)
+	}
+	if window <= 0 {
+		return nil, fmt.Errorf("httpd: window %s: a cadence over no time at all names no moment a refused caller comes back at", window)
+	}
+
+	c := &cadence[K]{ceiling: ceiling, window: window, now: now, seen: make(map[K]spent)}
+	return c.count, nil
+}
+
+// spent is what one key has taken of the window it opened: the instant that
+// window began, and the calls taken since.
+type spent struct {
+	opened time.Time
+	calls  int
+}
+
+// cadence is the state CountWithin closes over. Every request the server has
+// in flight reaches the same map, so both what it holds and when it was last
+// swept are read and written under the one mutex.
+type cadence[K comparable] struct {
+	ceiling int
+	window  time.Duration
+	now     func() time.Time
+
+	mu    sync.Mutex
+	seen  map[K]spent
+	swept time.Time
+}
+
+// count takes one call from the window of key, opening a fresh one for a key
+// that has none or whose own has passed. ctx is unread: the answer comes out
+// of the memory of the process that asked, and there is no lookup to cancel.
+func (c *cadence[K]) count(_ context.Context, key K) (bool, time.Duration, error) {
+	at := c.now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.forget(at)
+
+	w, seen := c.seen[key]
+	if !seen || !at.Before(w.opened.Add(c.window)) {
+		w = spent{opened: at}
+	}
+	if w.calls >= c.ceiling {
+		// What is left of the window this key opened, which is above zero
+		// because the window has not passed, and no longer than the window
+		// itself because it opened no later than now.
+		return false, w.opened.Add(c.window).Sub(at), nil
+	}
+	w.calls++
+	c.seen[key] = w
+	return true, 0, nil
+}
+
+// forget drops the keys whose window has passed, once per window rather than
+// once per request: what the map then holds is the keys seen since the sweep
+// before it, and a caller that never comes back is not held for the life of
+// the process. A sweep on every request would instead be one pass over every
+// key seen, at the rate the callers themselves set.
+func (c *cadence[K]) forget(at time.Time) {
+	if at.Before(c.swept.Add(c.window)) {
+		return
+	}
+	for key, w := range c.seen {
+		if !at.Before(w.opened.Add(c.window)) {
+			delete(c.seen, key)
+		}
+	}
+	c.swept = at
 }

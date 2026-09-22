@@ -22,7 +22,9 @@
 // LimitRate meters a route on the cadence of the caller it belongs to: the
 // service hands in the function naming that caller and the counter taking one
 // call from its budget, and a caller with none left is answered 429 in that
-// same envelope, told when to come back and its handler not run.
+// same envelope, told when to come back and its handler not run. CountWithin
+// is the counter for a service metering inside one process: a ceiling of calls
+// per caller inside a window, held in the memory of that process alone.
 //
 // GrantOrigins names, in one value, the policy a browser meets, and that value
 // has two halves: Grant.Wrap sits in front of the table, answers nothing of its
