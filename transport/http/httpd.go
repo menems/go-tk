@@ -19,6 +19,11 @@
 // it, and a caller holding it nowhere is answered 403 in that same envelope,
 // again without the handler running.
 //
+// LimitRate meters a route on the cadence of the caller it belongs to: the
+// service hands in the function naming that caller and the counter taking one
+// call from its budget, and a caller with none left is answered 429 in that
+// same envelope, told when to come back and its handler not run.
+//
 // GrantOrigins names, in one value, the policy a browser meets, and that value
 // has two halves: Grant.Wrap sits in front of the table, answers nothing of its
 // own and adds the grant to whatever was answered, a refusal included, while

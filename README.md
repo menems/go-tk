@@ -246,6 +246,53 @@ nothing is asked about rights for a request no route matched or no credential
 authenticated, `404`, `405` and `401` stay exactly what the two above left
 them, and `/status` above is covered while demanding no right.
 
+`LimitRate` meters a route on the cadence of the caller it belongs to. The
+service hands in two functions: the one naming that caller, and the counter
+taking one call from its budget.
+
+```go
+meter := httpd.LimitRate(callerOf, count) // both are yours
+h, err := httpd.NewRouter(
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: auth(meter(list))},
+    httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: auth(status)},
+)
+```
+
+The key is the service's own because every honest one is a fact this package
+holds nothing of: an address means deciding which forwarded header to trust,
+and a principal means a key only the service names. So a key a caller can forge
+is a key with which it spends another caller's budget, and a service keying on
+a forwarded address trusts exactly its own proxy or meters that proxy as one
+caller. A request the keying function names no caller for is served with no
+call taken, which is the price of that: a route reachable with no credential
+and keyed on its principal is metered for nobody.
+
+A caller with no call left is answered `429 too_many_requests` with a
+`Retry-After` header, and the handler does not run. The header carries a whole
+number of seconds, rounded up from the delay the counter gave and never below
+one: coming back on the second it names finds the call it promised, and a zero
+would invite the caller back at once.
+
+The counter answers a verdict, or an error saying it could not reach one. That
+error is the counter failing rather than answering: `500 rate_unavailable`, no
+`Retry-After`, handler still not run. A code of its own, not the
+`auth_unavailable` above: what failed is a budget and not a credential. Both
+refusals are one fixed body under one code, the same whatever caller was
+metered, whatever its ceiling and whatever its delay, and the one number either
+carries is that caller's own delay, in a header. So a ceiling is measured by
+probing and is not a secret, and a client tells the refusal it should wait out
+from the one it should report by the status and the code alone.
+
+The counter is a seam rather than a map fixed here, so a shared store, its
+module and its dependency stay the service's decision; a counter of a single
+process gives each replica a budget of its own. The wrap sits on the handler,
+so the order a request meets is the table, then the bearer, then the right,
+then the rate: no budget is spent on the `404` of a path nobody named, and the
+preflight `Grant.Router` answers below is answered before any wrap on a handler
+runs. A service whose key is readable from the request alone can place it
+outside the bearer wrap instead, the one position where a flood of unresolvable
+tokens is metered before the resolver is asked.
+
 `GrantOrigins` lets a browser at an origin the service listed read the answers
 this handler gives. The service names one policy at wiring, the origins it
 grants and the request headers it allows, and that one value has two halves:
