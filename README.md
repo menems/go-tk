@@ -522,6 +522,9 @@ pw.Equal(confirmation)                       // constant time, neither plaintext
 hasher, err := password.NewPBKDF2()          // or WithCost(n), or a Hasher of yours
 stored, err := pw.Hash(hasher)               // "$pbkdf2-sha256$i=600000$<salt>$<key>"
 err = pw.Verify(hasher, stored)              // nil, ErrMismatch or ErrUnreadable
+
+bounded, err := password.Bound(hasher, 8)    // at most 8 calls at once
+err = pw.Verify(bounded, stored)             // … or ErrBusy, at once, when all 8 are held
 ```
 
 A login body decodes into the carrier directly, so the plaintext is inside it
@@ -585,6 +588,22 @@ nil, and a caller that folds them into one watches an unreadable store look
 like a user who keeps mistyping. `ErrMismatch` is the same error whatever the
 password was, and neither carries any part of the password or of the stored
 value.
+
+`Bound` wraps any `Hasher`, the one in the box or a service's own, so that at
+most a number of its calls the service names run at once. A call arriving while
+every place is held is refused at once under `ErrBusy`, the wrapped hasher never
+seeing it, rather than queued. Hash and Verify draw on the one budget, since
+both spend the same CPU, and a place is given back however the call returns, a
+panic included. A number below one, and a nil hasher, are refused at wiring.
+`ErrBusy` is the third refusal and is distinct from the other two on purpose: a
+caller folding it into `ErrMismatch` shows an honest user a wrong password under
+load and feeds any lockout it counts. It denies, is never nil, and is one fixed
+error carrying no part of the password nor of the stored value. What the bound
+trades is a flood refused rather than slowed: enough logins, or a few rows
+carrying an attacker-written cost, hold every place and every honest login is
+refused until one frees. Metering callers in front (`httpd.LimitRate`) and
+bounding the rows stored are what limit that. The budget is the process's own,
+so three replicas hold three.
 
 The plaintext is not erased from memory, and nothing here pretends otherwise: a
 Go string is immutable and copied by the collector. That is the bound a service

@@ -3,7 +3,8 @@ package password
 import "errors"
 
 // The two ways a verification refuses, and the whole of the seam's error
-// contract. They are distinct because a caller does different things with
+// contract but for ErrBusy, which a hasher built by Bound answers for a call
+// it refused before reaching the one it wraps. They are distinct because a caller does different things with
 // them: ErrMismatch is an answer about a password and denies the login,
 // ErrUnreadable is the verification never having run and denies it too, while
 // naming a row nobody can authenticate against until it is rewritten. A caller
@@ -28,7 +29,8 @@ var (
 // Verify answers nil when they go together, ErrMismatch when they do not, and
 // ErrUnreadable for a stored value it cannot read: one another implementation
 // wrote, one truncated, one carrying parameters it does not understand, an
-// empty one. Hash and Verify are one interface rather than two because a
+// empty one. A hasher built by Bound answers ErrBusy, from either method, for
+// a call it refused before running it. Hash and Verify are one interface rather than two because a
 // stored value only means anything to the implementation that wrote it.
 //
 // The stored value is an opaque string on purpose. Its shape belongs to the
