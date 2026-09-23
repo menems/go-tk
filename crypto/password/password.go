@@ -1,5 +1,6 @@
 // Package password holds a plaintext password in a carrier nothing reads it
-// out of.
+// out of, and hashes and verifies it through the Hasher a service names at
+// wiring.
 //
 // A login body decodes into the carrier directly, so the secret is inside it
 // from the moment it enters the process, instead of passing through a plain
@@ -22,6 +23,12 @@
 // outgoing payload has a bug, and a toolkit answering it with an error decides
 // an outage on that service's behalf. What it costs is that the bug ships a
 // redacted member rather than stopping at the boundary.
+//
+// Hashing and verification sit behind one seam, Hasher, and a service names at
+// wiring which implementation it runs on: NewPBKDF2 ships here, and a bcrypt or
+// an argon2id one lives in that service's own module, where the dependency
+// belongs. This package picks none on its own, and a Hasher is the one thing
+// the plaintext ever leaves the carrier into.
 //
 // The package writes no log line, reads no environment and contacts nobody. It
 // does not promise the plaintext is erased from memory: a Go string is

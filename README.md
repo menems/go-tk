@@ -13,7 +13,7 @@ transport/http/          run an http.Handler with timeouts and a graceful stop
 authctx/                 read the bearer, carry the principal
 health/                  liveness and readiness probes
 config/                  read configuration at boot
-crypto/password/         hold a password in a type nothing reads it out of
+crypto/password/         hold a password, hash it and verify it behind a seam
 storage/postgres/        a pgxpool.Pool from a DSN
 storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
@@ -504,7 +504,8 @@ a default, not a boot failure.
 
 ## crypto/password
 
-Holds a plaintext password in a carrier nothing reads it out of. Stdlib only.
+Holds a plaintext password in a carrier nothing reads it out of, and hashes and
+verifies it through the hasher a service names at wiring. Stdlib only.
 
 ```go
 type login struct {
@@ -517,6 +518,10 @@ fmt.Sprintf("%v %s %q %+v %#v", pw, /*…*/)   // [REDACTED], every verb
 json.Marshal(pw)                             // "[REDACTED]"
 slog.Info("login", slog.Any("password", pw)) // password=[REDACTED]
 pw.Equal(confirmation)                       // constant time, neither plaintext leaves
+
+hasher, err := password.NewPBKDF2()          // or WithCost(n), or a Hasher of yours
+stored, err := pw.Hash(hasher)               // "$pbkdf2-sha256$i=600000$<salt>$<key>"
+err = pw.Verify(hasher, stored)              // nil, ErrMismatch or ErrUnreadable
 ```
 
 A login body decodes into the carrier directly, so the plaintext is inside it
@@ -543,7 +548,43 @@ lossy for the same reason.
 A carrier holding nothing matches nothing. `New("")` and either decoding of an
 empty value answer `ErrEmpty`, a JSON `null` and a JSON value that is not a
 string are refused too, and the zero value redacts like any other, so nothing
-derived from a carrier nobody filled can verify.
+derived from a carrier nobody filled can verify. Hashing one is refused under
+the same error rather than done.
+
+`Hasher` is the seam: one interface naming both the hashing and the
+verification, and the service names at wiring which implementation it runs on.
+This package picks none on its own. It takes the plaintext as bytes and not as
+a carrier, because a carrier reads out to nobody and an implementation living
+in a service's own module could not open one. That call is also the one place
+the plaintext leaves the carrier, into the hasher the service chose and nowhere
+else.
+
+`NewPBKDF2` is the implementation in the box: PBKDF2-HMAC-SHA256 at
+`DefaultCost` iterations unless `WithCost` names another, and a cost below one
+refused at wiring under an error naming the value. It derives by iteration
+alone, the memory-cheap one of the three schemes anyone recommends, which is
+the price of this module holding nothing outside the standard library. A
+service whose stolen table would be worth cracking on GPUs writes a bcrypt or
+an argon2id `Hasher` at its own wiring, in its own module, where that
+dependency belongs; nothing else about the service changes.
+
+A stored value carries the parameters it was made under, so a service raising
+its cost still verifies everything it stored before. Each hash salts afresh, so
+one password hashed twice gives two stored values that both verify it. A value
+another implementation wrote, one truncated, one whose parameters it cannot
+read and an empty one are each refused and match nothing. The cost is read back
+out of the value with no ceiling on it, since the ceiling would have to be the
+one `WithCost` accepts: a corrupted or attacker-written row can therefore make
+one verification arbitrarily slow, and a service that has to bound that bounds
+the row.
+
+The two refusals are distinct on purpose. `ErrMismatch` is an answer about a
+password; `ErrUnreadable` is the verification never having run, and names a row
+nobody can authenticate against until it is rewritten. Both deny, neither is
+nil, and a caller that folds them into one watches an unreadable store look
+like a user who keeps mistyping. `ErrMismatch` is the same error whatever the
+password was, and neither carries any part of the password or of the stored
+value.
 
 The plaintext is not erased from memory, and nothing here pretends otherwise: a
 Go string is immutable and copied by the collector. That is the bound a service
