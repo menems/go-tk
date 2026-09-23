@@ -1,4 +1,4 @@
-# roadmap
+# backlog
 > go-tk: les briques que chaque service réécrit, extraites une fois
 
 - json-envelope [transport] — un service répond à chaque route sous une forme de corps unique, erreurs comprises, et lit un corps de requête borné à une taille qu'il nomme, sans écrire l'encodage lui-même
