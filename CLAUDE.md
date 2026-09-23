@@ -28,11 +28,11 @@ A directory groups siblings, present or planned: `storage/mysql` and `transport/
 Each module carries its own tag: `v0.2.0`, `storage/postgres/v0.2.0`. `make release VERSION=vX.Y.Z` runs `make check` and pushes every tag. `go.work` is committed, so an edit across modules resolves locally without publishing anything.
 
 ## Plans
-Implementation plans live in `docs/plans/<plan-name>.md`, a tracked path. `plan-feature` writes them and commits each one as the first commit of its `feat/<plan-name>` branch; `implement` reads them.
+Implementation plans live in `docs/plans/<plan-name>.md`, a tracked path. `plan-issue` writes them and commits each one as the first commit of its `<type>/<plan-name>` branch; `implement` reads them.
 
-Worktrees: `.claude/worktrees`. `plan-feature` gives each plan a working directory of its own there, and this checkout stays on `main`. `merge` removes it.
+Worktrees: `.claude/worktrees`. `plan-issue` gives each plan a working directory of its own there, and this checkout stays on `main`. `merge` removes it.
 
-`docs/plans/BACKLOG.md` lists the plans, in order, with the context that owns each one and their dependencies. `roadmap` appends to it on `main`; no branch edits it, no line is removed. It carries no status: `next-plan` computes merged / in flight / queued from git.
+`docs/plans/BACKLOG.md` is the solo queue: one line per issue, in order, in the format of the `file` queue adapter (type, actor @ surface, outcome, `after:` blockers). `backlog` (plugin `menems-product`) appends to it on `main`; no branch edits it, no line is removed. It carries no status: `backlog` without argument computes landed / in flight / queued from git, and `start` takes the next unblocked line.
 
 A context there is the directory the brick lands in; the module follows from its dependency set, so a plan that adds a third-party dependency adds a module. A merged plan is not yet importable next door: `make release` is what a consumer waits for.
 
@@ -44,4 +44,4 @@ Runs `fmt-check`, `vet` and `race` over each module in turn. Everything CI runs.
 ## Consumers
 A consumer builds against this working copy through a workspace of its own, so an unpublished change is visible to it before a tag exists. Two consequences: a breaking change is felt next door immediately, and nothing merges there until the version it needs is tagged and required. A consumer never edits this repo from one of its own steps.
 
-**Arrival.** A merged plan here is available to a consumer once a tag of its module contains it and that consumer requires the tag. The plan's commit is `git log main --grep='^plan(<name>): create' --format=%H`, the tags carrying it are `git tag --contains <sha>` filtered on the module's prefix, and what the consumer requires is its own `go.mod`. Merged here and untagged is the state `make release` closes, and it is the one blockage a consumer's queue cannot lift for itself.
+**Arrival.** A merged plan here is available to a consumer once a tag of its module contains it and that consumer requires the tag. The plan's commit is its `plan(<name>): create` commit when `main` carries one (a plan merged before squashed landings), its landing otherwise, `git log main --grep='^Plan: <name>$' --format=%H`; never the migration commit that lists every old plan at once, which no tag contains. The tags carrying it are `git tag --contains <sha>` filtered on the module's prefix, and what the consumer requires is its own `go.mod`. Merged here and untagged is the state `make release` closes, and it is the one blockage a consumer's queue cannot lift for itself.
