@@ -14,6 +14,7 @@ authctx/                 read the bearer, carry the principal
 health/                  liveness and readiness probes
 config/                  read configuration at boot
 crypto/password/         hold a password, hash it and verify it behind a seam
+crypto/token/            issue an opaque bearer token, store a value that replays nothing
 storage/postgres/        a pgxpool.Pool from a DSN
 storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
@@ -36,14 +37,14 @@ another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `crypto/password` | none |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `crypto/password`, `crypto/token` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
 | `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, crypto/password
+go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, crypto/password, crypto/token
 go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
 go get github.com/menems/go-tk/storage/postgres/migrate  # adds golang-migrate
 go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
@@ -608,6 +609,62 @@ so three replicas hold three.
 The plaintext is not erased from memory, and nothing here pretends otherwise: a
 Go string is immutable and copied by the collector. That is the bound a service
 holding one for longer than a request should know.
+
+## crypto/token
+
+Issues an opaque bearer token, and parses it back when it arrives. Stdlib only.
+
+```go
+tk := token.Issue()                   // 256 bits from crypto/rand
+text := tk.Reveal()                   // 43 characters, base64url: the response hands it out once
+stored, err := tk.Stored()            // hex SHA-256 of the secret: the column, under a unique index
+
+text, ok := authctx.Bearer(r.Header)  // on a later request
+tk, err = token.Parse(text)           // ErrMalformed on anything Issue did not write
+stored, err = tk.Stored()             // the row to look up; the row is the verdict
+
+fmt.Sprintf("%v %s %q %+v %#v", tk, /*…*/) // [REDACTED], every verb
+json.Marshal(tk)                      // "[REDACTED]"
+slog.Info("issued", slog.Any("token", tk)) // token=[REDACTED]
+json.Unmarshal(body, &req)            // a Token field parses like Parse, ErrMalformed otherwise
+```
+
+The text leaves the carrier through `Reveal` alone. What a service writes to
+disk is the stored value, which replays nothing: the secret carries 256 bits,
+so there is no preimage to search, and a leaked table or a logged row opens no
+session. It is deterministic so the service finds its row by it.
+
+Every other surface redacts, as a `password.Password` does and by the same
+hooks: `String`, `GoString` for `%#v`, `MarshalJSON`, `MarshalText` and
+`LogValue` each answer the one fixed `[REDACTED]`, the zero value included. The
+secret sits behind a pointer, so a struct holding a carrier in an unexported
+field, out of reach of those hooks, prints an address and no part of the text.
+Marshalling redacts instead of failing, and the response handing a token out
+writes `Reveal` into its own field. A request body decodes into the carrier
+directly: `UnmarshalJSON` and `UnmarshalText` parse like `Parse`, and a JSON
+`null`, a JSON value that is not a string and any text `Parse` refuses are
+refused under `ErrMalformed`.
+
+It is not a `password.Hasher`'s output on purpose. A salted, slow derivation
+cannot be looked up by value, so it would force a selector into the token and
+spend on every request the CPU `password.Bound` exists to limit, to protect a
+secret that is already unguessable.
+
+A token that parses is well formed, not valid. This package identifies nobody:
+the verdict is the service's row, carrying its own expiry and revocation, and a
+`Resolver` treating a parse success as authentication fails open. `Parse`
+checks the length first, fixed at 43, so a parse costs the same whatever
+arrives. It accepts only the one text `Issue` would have written for a secret:
+a padded text, a line break or the unused low bits of the last character set
+differently decode to the same secret and are refused. Every refusal is the
+one fixed `ErrMalformed`, carrying no part of what arrived. A stored value is
+64 characters and never parses.
+
+The zero value reveals `""` and answers `ErrEmpty` for a stored value, so no
+row is ever keyed on a token nothing issued. The package is named `token` and
+shadows `go/token`, which a service has no use for; `opaque` would read, under
+`crypto/`, as the OPAQUE protocol. It writes no log line and does not erase the
+text from memory.
 
 ## storage/postgres
 
