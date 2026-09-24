@@ -39,7 +39,10 @@ func (uniqueViolation) Is(target error) bool { return target == ErrUniqueViolati
 // only its SQLSTATE: "pg: server error, SQLSTATE 22P02". The server's own
 // fields, and the text of whatever wraps them, are left out, since they can
 // quote a value the statement sent (an invalid input syntax does). Any other
-// cause, a network, context or pool failure, keeps its text: "pg: " + Err's.
+// cause keeps its own text: "pg: " + Err's. That covers network, context and
+// pool failures, and also the errors pgx builds client-side: an encode failure
+// quotes the value sent ("unable to encode <value> into ... format"), so the
+// text is no safer than the argument that failed.
 type Error struct {
 	Err error
 }

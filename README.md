@@ -874,9 +874,12 @@ A unique violation's message never carries the server's detail, which quotes
 the colliding row (an email, a username). Nor does `*Error`'s, for a server
 refusal: it reads `pg: server error, SQLSTATE 22P02`, the code alone, since
 the server's message and detail can quote a value the statement sent (an
-invalid input syntax does). Any other cause, a network, context or pool
-failure, keeps its text after `pg: `. The full cause stays reachable through
-`errors.As` to `*pgconn.PgError`.
+invalid input syntax does). Any other cause keeps its own text after `pg: `:
+a network, context or pool failure, and also an error pgx builds client-side.
+An encode failure is one, and it quotes the value sent (`unable to encode
+<value> into ... format`), so that text is no safer than the argument that
+failed. A server refusal's full cause stays reachable through `errors.As` to
+`*pgconn.PgError`.
 
 ## storage/postgres/migrate
 
