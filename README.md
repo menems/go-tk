@@ -16,6 +16,7 @@ config/                  read configuration at boot
 sortid/                  mint ids that sort in creation order
 crypto/password/         hold a password, hash it and verify it behind a seam
 crypto/token/            issue an opaque bearer token, store a value that replays nothing
+storage/keyset/          serve a list page by page, newest first, from a cursor
 storage/postgres/        a bounded pgxpool.Pool, Classify and its sentinels
 storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
@@ -38,14 +39,14 @@ another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `sortid`, `crypto/password`, `crypto/token` | none |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `sortid`, `crypto/password`, `crypto/token`, `storage/keyset` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
 | `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, sortid, crypto/password, crypto/token
+go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, sortid, crypto/password, crypto/token, storage/keyset
 go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
 go get github.com/menems/go-tk/storage/postgres/migrate  # adds golang-migrate
 go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
@@ -737,6 +738,72 @@ row is ever keyed on a token nothing issued. The package is named `token` and
 shadows `go/token`, which a service has no use for; `opaque` would read, under
 `crypto/`, as the OPAQUE protocol. It writes no log line and does not erase the
 text from memory.
+
+## storage/keyset
+
+Serves a list page by page, newest first, keyed on a `sortid.ID`, from the
+cursor the previous page returned. Stdlib and `sortid` only, in the root
+module.
+
+```go
+pages, err := keyset.New(25, 100) // at wiring: default size, largest size
+q, err := pages.Query(keyset.Texts{
+    Size:   r.URL.Query().Get("size"),
+    Cursor: r.URL.Query().Get("cursor"),
+})
+if errors.Is(err, keyset.ErrSize) || errors.Is(err, keyset.ErrCursor) {
+    // the handler's refusal, under the status it owns
+}
+rows, err := s.list(ctx, uuid.UUID(q.Bound()), q.Limit())
+//   SELECT ... WHERE owner = $1 AND id < $2 ORDER BY id DESC LIMIT $3
+page, next, err := keyset.Page(q, rows, func(o Order) sortid.ID { return o.ID })
+// next is "" on the last page
+```
+
+The package runs no query. The table, the filters that scope the list to the
+caller and the driver are the service's; what the package owns is the bound,
+the limit and the cursor. A helper running the query in `storage/postgres`
+could carry neither the table nor the filters, and a handler would import pgx's
+module to read a cursor off a request.
+
+`Query` asks for one row more than the page size. When the query returns it,
+the page is full and `next` is the id of its last row; when it does not, the
+page is the last one and `next` is `""`, including a last page holding exactly
+the page size. An empty list gives an empty, allocated page, so a response
+writes `[]` and not `null`. The first page's bound compares above every id; it
+is no id itself and fails `MarshalText`, so the service passes it to its query
+as `uuid.UUID(q.Bound())` and never writes it out.
+
+Rows minted after a page was read sort above its cursor, so the walk's next
+pages do not return them, and no older row is skipped or repeated.
+
+`Page` checks what the query returned before writing a cursor from it: more
+rows than the limit, a row at or above the bound, two rows out of descending
+order, or an id of another version than 7 is the service's query breaking its
+contract. It is refused under an error that is neither `ErrCursor`, `ErrSize`
+nor `sortid.ErrMalformed`, so a service mapping those to a client error does
+not blame the client for its own query, and no page nor cursor is returned.
+
+A size is a decimal integer from 1 to the largest named at wiring, in ASCII
+digits only, its length checked against the largest's digits first. Anything
+else, 0, a sign, a space, a fraction, a text wider than the largest can be, is
+the one fixed `ErrSize`, carrying no part of what arrived. The empty text is no
+size and serves the default.
+
+A cursor is the text of an id, parsed like `sortid.Parse`, its length checked
+first. Anything else, an id of another version, a truncated or an over-long
+text, is the one fixed `ErrCursor`, carrying no part of what arrived. The empty
+text is no cursor and starts at the newest row.
+
+`New` refuses a largest size below 1 or at `math.MaxInt`, whose row limit would
+overflow, or a default size below 1 or above the largest, naming the value, and
+returns no pager.
+
+The cursor grants nothing and is not signed. A client may write any cursor the
+package accepts, which only moves where the walk starts within the rows the
+service's own query scopes to the caller: the query's `WHERE`, not the cursor,
+authorizes. A cursor carries an id, so it publishes that row's creation time as
+the id does.
 
 ## storage/postgres
 
