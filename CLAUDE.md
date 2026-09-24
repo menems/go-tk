@@ -14,7 +14,7 @@ Five, one per dependency set, so importing one package cannot drag another's dep
 
 | Module | Packages | Outside the stdlib |
 |---|---|---|
-| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `crypto/password` | none |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `sortid`, `crypto/password`, `crypto/token` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
 | `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |

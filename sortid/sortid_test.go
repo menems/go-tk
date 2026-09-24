@@ -119,7 +119,7 @@ func TestIDsMintedConcurrentlyAreDistinct(t *testing.T) {
 func TestAMintedIDsTextIsTheStdlibsAndParsesBack(t *testing.T) {
 	t.Parallel()
 
-	m := minter(t, time.Now)
+	m := minter(t, stalled)
 	for range 1_000 {
 		id := m.Mint()
 		text := id.String()

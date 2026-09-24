@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 	"uuid"
 
 	"github.com/menems/go-tk/sortid"
@@ -34,7 +33,7 @@ type draft struct {
 func TestAnIDFieldMarshalsAsItsTextAndUnmarshalsBack(t *testing.T) {
 	t.Parallel()
 
-	id := minter(t, time.Now).Mint()
+	id := minter(t, stalled).Mint()
 	b, err := json.Marshal(order{ID: id})
 	if err != nil {
 		t.Fatalf("Marshal = %v, want the id's text", err)
@@ -132,7 +131,7 @@ func TestABodyWhoseIDIsNotItsTextIsRefusedAndLeavesTheFieldAsItWas(t *testing.T)
 		"a boolean":               `{"id":true}`,
 		"an object":               `{"id":{}}`,
 		"an array of 16 numbers":  `{"id":[1,146,37,140,74,126,123,60,157,30,47,58,75,92,109,126]}`,
-		"an escaped upper-casing": `{"id":"0192258c-4a7e-7b3c-9d1e-2f3a4b5c6d7E"}`,
+		"an escaped upper-casing": `{"id":"0192258c-4a7e-7b3c-9d1e-2f3a4b5c6d7\u0045"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

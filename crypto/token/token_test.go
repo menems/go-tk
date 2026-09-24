@@ -93,15 +93,17 @@ func TestTenThousandIssuedTokensAreDistinct(t *testing.T) {
 func TestAStoredValueCarriesNoPartOfItsTextAndDoesNotParse(t *testing.T) {
 	t.Parallel()
 
+	s := stored(t, parsed(t, knownText))
+
 	// Any six characters of the text in a row would be a part of it.
 	const window = 6
 	for i := 0; i+window <= len(knownText); i++ {
-		if part := knownText[i : i+window]; strings.Contains(knownStored, part) {
-			t.Errorf("the stored value %q carries %q, a part of its text", knownStored, part)
+		if part := knownText[i : i+window]; strings.Contains(s, part) {
+			t.Errorf("the stored value %q carries %q, a part of its text", s, part)
 		}
 	}
 
-	if _, err := token.Parse(stored(t, parsed(t, knownText))); !errors.Is(err, token.ErrMalformed) {
+	if _, err := token.Parse(s); !errors.Is(err, token.ErrMalformed) {
 		t.Errorf("Parse of a stored value = %v, want ErrMalformed", err)
 	}
 }
