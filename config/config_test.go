@@ -231,16 +231,31 @@ func TestIntBetweenWrongBoundsBlameTheCode(t *testing.T) {
 func TestIntBetweenWrongBoundsAtEveryCall(t *testing.T) {
 	t.Parallel()
 
-	e := config.New(env(nil))
-	e.IntBetween("SLOTS", 64, 1, 4)
-	e.IntBetween("SLOTS", 64, 1, 4)
-
-	err := e.Err()
-	if err == nil {
-		t.Fatal("Err = nil, want two problems")
+	tests := []struct {
+		name             string
+		lo, hi, fallback int
+		problem          string
+	}{
+		{name: "reversed", lo: 64, hi: 1, fallback: 4, problem: "admit no value"},
+		{name: "fallback outside", lo: 1, hi: 64, fallback: 100, problem: "outside its bounds"},
 	}
-	if got := strings.Count(err.Error(), "admit no value"); got != 2 {
-		t.Errorf("Err = %q holds %d problems, want 2", err, got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := config.New(env(nil))
+			e.IntBetween("SLOTS", tt.lo, tt.hi, tt.fallback)
+			e.IntBetween("SLOTS", tt.lo, tt.hi, tt.fallback)
+
+			err := e.Err()
+			if err == nil {
+				t.Fatal("Err = nil, want two problems")
+			}
+			if got := strings.Count(err.Error(), tt.problem); got != 2 {
+				t.Errorf("Err = %q holds %d problems, want 2", err, got)
+			}
+		})
 	}
 }
 
