@@ -804,11 +804,10 @@ Wires the OpenTelemetry trace and metric providers at boot and flushes them at
 shutdown.
 
 ```go
-tel, err := otel.Setup(ctx, otel.Config{
-    ServiceName:    "users",
-    ServiceVersion: build.Version,
-    OTLPEndpoint:   cfg.OTLPEndpoint, // "" reports nowhere
-})
+tel, err := otel.Setup(ctx, "users",
+    otel.WithServiceVersion(build.Version),
+    otel.WithOTLPEndpoint(cfg.OTLPEndpoint), // "" reports nowhere
+)
 if err != nil {
     return fmt.Errorf("telemetry: %w", err)
 }
@@ -832,8 +831,9 @@ hundred lines reimplementing `otelhttp`.
 `Setup` also sets the W3C trace context propagator, which all of them forgot.
 Without it a trace stops at the first service boundary, and a test pins it.
 
-`OTLPEndpoint` empty installs providers with no exporter, so the instrumented
-code runs unchanged on a laptop and in a test.
+`WithOTLPEndpoint("")`, like no `WithOTLPEndpoint` at all, installs providers
+with no exporter, so the instrumented code runs unchanged on a laptop and in a
+test.
 
 Shutdown is deliberately **not** an `app.Runner`. Telemetry has to outlive the
 servers it observes or their last spans never leave the process, and an
@@ -849,10 +849,7 @@ service pulled rather than pushed.
 reg := promclient.NewRegistry()
 reader, err := prometheus.Reader(reg)
 ...
-tel, err := otel.Setup(ctx, otel.Config{
-    ServiceName:   "users",
-    MetricReaders: []sdkmetric.Reader{reader},
-})
+tel, err := otel.Setup(ctx, "users", otel.WithMetricReader(reader))
 ...
 mux.Handle("GET /metrics", prometheus.Handler(reg))
 ```

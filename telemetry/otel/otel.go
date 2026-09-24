@@ -10,8 +10,8 @@
 // Writing that middleware by hand is how the services this replaces each grew
 // a hundred lines reimplementing a maintained library.
 //
-// Metrics leave through the readers Config names. For a service scraped rather
-// than pushed, go-tk/telemetry/prometheus returns one.
+// Metrics leave through the readers WithMetricReader adds. For a service
+// scraped rather than pushed, go-tk/telemetry/prometheus returns one.
 //
 // Shutdown is not an app.Runner. Telemetry has to outlive the servers it
 // observes, or their last spans never leave the process, and an app.App stops
@@ -40,23 +40,36 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Config describes what to report and where.
-type Config struct {
-	// ServiceName labels every span and metric. Required: telemetry that
-	// does not say which service produced it is not telemetry.
-	ServiceName string
+// Option is what Setup takes at wiring, on top of the service name.
+type Option func(*settings)
 
-	// ServiceVersion labels them too, when known.
-	ServiceVersion string
+// WithServiceVersion labels every span and metric with the version that
+// produced it. Empty adds no version label, as omitting the option does.
+func WithServiceVersion(version string) Option {
+	return func(s *settings) { s.serviceVersion = version }
+}
 
-	// OTLPEndpoint is the collector's base URL, such as
-	// http://localhost:4318. Empty installs providers with no exporter, so
-	// the code under them runs unchanged in a test or on a laptop.
-	OTLPEndpoint string
+// WithOTLPEndpoint names the collector's base URL, such as
+// http://localhost:4318, that spans and metrics are pushed to. Empty installs
+// providers with no exporter, as omitting the option does, so the code under
+// them runs unchanged in a test or on a laptop, and a caller passes an
+// optional config value straight through.
+func WithOTLPEndpoint(url string) Option {
+	return func(s *settings) { s.otlpEndpoint = url }
+}
 
-	// MetricReaders are read on top of any OTLP one, for a service scraped
-	// rather than pushed. go-tk/telemetry/prometheus returns one.
-	MetricReaders []sdkmetric.Reader
+// WithMetricReader adds a reader, read on top of any OTLP one, for a service
+// scraped rather than pushed. go-tk/telemetry/prometheus returns one. Each
+// call adds one more, in the order given. A nil reader is refused by Setup.
+func WithMetricReader(reader sdkmetric.Reader) Option {
+	return func(s *settings) { s.metricReaders = append(s.metricReaders, reader) }
+}
+
+type settings struct {
+	serviceName    string
+	serviceVersion string
+	otlpEndpoint   string
+	metricReaders  []sdkmetric.Reader
 }
 
 // Providers holds what Setup built, for a caller that would rather pass a
@@ -72,11 +85,24 @@ type Providers struct {
 // sets the W3C trace context propagator, without which a trace stops at the
 // first service boundary.
 //
+// serviceName labels every span and metric. Setup refuses it empty, since
+// telemetry that does not say which service produced it is not telemetry, and
+// refuses a nil reader passed to WithMetricReader.
+//
 // The caller shuts them down; a Setup that returned an error installed
 // nothing.
-func Setup(ctx context.Context, cfg Config) (*Providers, error) {
-	if cfg.ServiceName == "" {
-		return nil, errors.New("telemetry: ServiceName is required")
+func Setup(ctx context.Context, serviceName string, opts ...Option) (*Providers, error) {
+	cfg := settings{serviceName: serviceName}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.serviceName == "" {
+		return nil, errors.New("telemetry: service name is required")
+	}
+	for i, reader := range cfg.metricReaders {
+		if reader == nil {
+			return nil, fmt.Errorf("telemetry: metric reader %d is nil", i)
+		}
 	}
 
 	res, err := newResource(cfg)
@@ -126,10 +152,10 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func newResource(cfg Config) (*resource.Resource, error) {
-	attrs := []attribute.KeyValue{semconv.ServiceName(cfg.ServiceName)}
-	if cfg.ServiceVersion != "" {
-		attrs = append(attrs, semconv.ServiceVersion(cfg.ServiceVersion))
+func newResource(cfg settings) (*resource.Resource, error) {
+	attrs := []attribute.KeyValue{semconv.ServiceName(cfg.serviceName)}
+	if cfg.serviceVersion != "" {
+		attrs = append(attrs, semconv.ServiceVersion(cfg.serviceVersion))
 	}
 
 	// Schemaless on purpose. Merging two resources that each carry a
@@ -147,11 +173,11 @@ func newResource(cfg Config) (*resource.Resource, error) {
 	return res, nil
 }
 
-func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+func newTracerProvider(ctx context.Context, cfg settings, res *resource.Resource) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 
-	if cfg.OTLPEndpoint != "" {
-		exp, err := otlptrace.New(ctx, otlptrace.WithEndpointURL(cfg.OTLPEndpoint))
+	if cfg.otlpEndpoint != "" {
+		exp, err := otlptrace.New(ctx, otlptrace.WithEndpointURL(cfg.otlpEndpoint))
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 		}
@@ -161,18 +187,18 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 	return sdktrace.NewTracerProvider(opts...), nil
 }
 
-func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
+func newMeterProvider(ctx context.Context, cfg settings, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
 	opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
 
-	if cfg.OTLPEndpoint != "" {
-		exp, err := otlpmetric.New(ctx, otlpmetric.WithEndpointURL(cfg.OTLPEndpoint))
+	if cfg.otlpEndpoint != "" {
+		exp, err := otlpmetric.New(ctx, otlpmetric.WithEndpointURL(cfg.otlpEndpoint))
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: metric exporter: %w", err)
 		}
 		opts = append(opts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)))
 	}
 
-	for _, reader := range cfg.MetricReaders {
+	for _, reader := range cfg.metricReaders {
 		opts = append(opts, sdkmetric.WithReader(reader))
 	}
 

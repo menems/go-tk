@@ -5,10 +5,7 @@
 //
 //	reg := promclient.NewRegistry()
 //	reader, err := prometheus.Reader(reg)
-//	tel, err := otel.Setup(ctx, otel.Config{
-//	    ServiceName:   "users",
-//	    MetricReaders: []sdkmetric.Reader{reader},
-//	})
+//	tel, err := otel.Setup(ctx, "users", otel.WithMetricReader(reader))
 //	mux.Handle("GET /metrics", prometheus.Handler(reg))
 //
 // The instruments stay OpenTelemetry's, so a service switches between scraping
@@ -30,7 +27,7 @@ import (
 )
 
 // Reader returns a pull-based metric reader that records into reg, to be
-// passed as one of otel.Config's MetricReaders.
+// passed to otel.Setup through otel.WithMetricReader.
 func Reader(reg promclient.Registerer) (sdkmetric.Reader, error) {
 	reader, err := promexporter.New(promexporter.WithRegisterer(reg))
 	if err != nil {

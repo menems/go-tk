@@ -12,8 +12,6 @@ A package hands back stdlib types and lets the caller write its own adapter. Not
 ## Optional parameters
 An exported constructor takes its required dependencies positionally and every optional knob through `...Option`, even a single one. This overrides the Go idiom's "options only for many knobs", which is written for application code: here, adding a knob later must not change a signature every consumer compiles against. An invalid option value is refused by the constructor, which then returns an error. Failure mode: an `Option` type written for knobs that never come.
 
-Exception: `otel.Setup(ctx, Config)`. It is tagged and consumed, and a struct also grows without breaking a caller that writes a keyed literal; converting it would break every consumer for no new knob.
-
 ## Modules
 Five, one per dependency set, so importing one package cannot drag another's dependencies into a consumer's graph.
 
