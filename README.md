@@ -743,8 +743,18 @@ text from memory.
 Opens a `*pgxpool.Pool` from a DSN. No wrapper type, no ping: pgxpool connects
 lazily, and reachability is `health`'s question.
 
+Every statement is bounded by default. `New` sets the server's
+`statement_timeout` to `DefaultStatementTimeout` (30s) on every connection, so
+a service running a longer statement names a longer bound with
+`WithStatementTimeout`. A service behind a stock PgBouncer fails its first
+connection, since PgBouncer refuses the parameter at startup: it passes
+`WithoutStatementTimeout`, and its bound is then the role's or the pooler's.
+
 ```go
-pool, err := postgres.New(ctx, dsn, postgres.WithMaxConns(25))
+pool, err := postgres.New(ctx, dsn,
+    postgres.WithMaxConns(25),
+    postgres.WithStatementTimeout(5*time.Second),
+)
 if err != nil {
     return fmt.Errorf("db: %w", err)
 }
@@ -753,6 +763,50 @@ defer pool.Close()
 
 `New` owns the pool size. A `pool_max_conns` in the DSN is overwritten by
 `DefaultMaxConns` (10) or by `WithMaxConns`.
+
+`New` owns the bound the same way. A `statement_timeout` in the DSN is
+overwritten by the default or by `WithStatementTimeout`, and dropped by
+`WithoutStatementTimeout`. The bound travels in whole milliseconds: `New`
+refuses one under a millisecond or over 2147483647 ms, and returns no pool.
+The server enforces it on every statement, whether or not the call carries a
+context deadline.
+
+`Classify` reads the error pgx returned, before a repository maps it to its
+own kinds, so a service tests one package's vocabulary instead of pgx's and
+pgconn's:
+
+```go
+_, err := pool.Exec(ctx, insertUser, u.Email)
+switch err := postgres.Classify(err); {
+case err == nil:
+    return nil
+case errors.Is(err, postgres.ErrUniqueViolation) && postgres.ConstraintName(err) == "users_email_key":
+    return user.ErrEmailTaken
+default:
+    return fmt.Errorf("insert user: %w", err)
+}
+```
+
+| pgx returned | `Classify` returns |
+|---|---|
+| nil | nil |
+| no row for a single-row query | `ErrNoRows`, which `errors.Is` also matches to `pgx.ErrNoRows` |
+| a refusal under SQLSTATE 23505 | a value matching `ErrUniqueViolation`; `ConstraintName` names the index |
+| an error already read, wrapped or not | the same error, unchanged |
+| anything else | `*Error`, whose `Unwrap` reaches the driver's error |
+
+`errors.As` to `*pgconn.PgError` and `errors.Is` to a context error still work
+through `*Error`. Neither `ErrNoRows` nor a unique violation is an `*Error`.
+
+The rule is positional. `Classify` cannot tell a driver failure from an error
+a callback handed back through `pgx.BeginFunc`, and takes both as the
+driver's. Read errors inside the transaction callback and return what
+`Classify` gave you: it comes back unchanged through `BeginFunc`.
+
+A unique violation's message never carries the server's detail, which quotes
+the colliding row (an email, a username). `*Error`'s message repeats its
+cause's, which for some failures (an invalid input syntax) quotes a value the
+statement sent: bear it in mind before logging it.
 
 ## storage/postgres/migrate
 
