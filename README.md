@@ -13,6 +13,7 @@ transport/http/          run an http.Handler with timeouts and a graceful stop
 authctx/                 read the bearer, carry the principal
 health/                  liveness and readiness probes
 config/                  read configuration at boot
+sortid/                  mint ids that sort in creation order
 crypto/password/         hold a password, hash it and verify it behind a seam
 crypto/token/            issue an opaque bearer token, store a value that replays nothing
 storage/postgres/        a pgxpool.Pool from a DSN
@@ -37,14 +38,14 @@ another's dependencies into your module graph.
 
 | module | packages | outside the stdlib |
 |---|---|---|
-| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `crypto/password`, `crypto/token` | none |
+| `github.com/menems/go-tk` | `app`, `transport/http`, `authctx`, `health`, `config`, `sortid`, `crypto/password`, `crypto/token` | none |
 | `github.com/menems/go-tk/storage/postgres` | `storage/postgres` | pgx |
 | `github.com/menems/go-tk/storage/postgres/migrate` | `storage/postgres/migrate` | golang-migrate, pgx |
 | `github.com/menems/go-tk/telemetry/otel` | `telemetry/otel` | OpenTelemetry |
 | `github.com/menems/go-tk/telemetry/prometheus` | `telemetry/prometheus` | OpenTelemetry SDK, Prometheus |
 
 ```
-go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, crypto/password, crypto/token
+go get github.com/menems/go-tk                        # app, transport/http, authctx, health, config, sortid, crypto/password, crypto/token
 go get github.com/menems/go-tk/storage/postgres       # adds pgx, and nothing else
 go get github.com/menems/go-tk/storage/postgres/migrate  # adds golang-migrate
 go get github.com/menems/go-tk/telemetry/otel         # adds OpenTelemetry
@@ -502,6 +503,62 @@ Error messages name the key and never the value, because a malformed
 Only a string can be `Required`. The values with no sensible default are DSNs,
 endpoints and secrets; a port or a timeout that reaches production unset wants
 a default, not a boot failure.
+
+## sortid
+
+Mints ids that sort in creation order, and parses back only the text they are
+written in. Stdlib only.
+
+```go
+mint, err := sortid.NewMinter(time.Now) // at wiring; a nil clock is refused here
+id := mint.Mint()                       // a version 7 UUID, greater than every id before it
+text := id.String()                     // 0192258c-4a7e-7b3c-9d1e-2f3a4b5c6d7e, the stdlib's text
+id, err = sortid.Parse(r.PathValue("id")) // ErrMalformed on anything String would not write
+id.Compare(other)                       // mint order; the texts compare the same way as strings
+json.Marshal(order{ID: id})             // {"id":"0192258c-..."}; a map keyed by ID writes the same text
+json.Unmarshal(body, &req)              // an ID field decodes like Parse, ErrMalformed otherwise
+
+row.ID = uuid.UUID(id)                  // to the row's 16 bytes, no call
+id = sortid.ID(row.ID)                  // and back, trusting the service's own row
+```
+
+An `ID` is a version 7 UUID of RFC 9562: 48 bits of Unix milliseconds, the
+version, 12 bits of the millisecond's fraction as the stdlib writes them, the
+variant, and 62 bits from `crypto/rand`. Its bytes and its text sort in mint
+order, so a row keyed on it lands at the end of its index.
+
+A `Minter` takes the service's clock at wiring, as `httpd.CountWithin` does,
+and keeps the last timestamp it used. When the clock stands still or steps
+back, it moves one 4,096th of a millisecond past that one instead, so ids keep
+increasing and run ahead of the clock by that much per id until it catches up.
+It is not the stdlib's `uuid.NewV7` behind a function: that reads its own
+clock, so no test can pin what a stalled or backward clock gives, and on a
+backward step it starts over and the order breaks. There is no package-level
+default minter either, which would be global state with its clock set before
+first use by convention alone.
+
+`Parse` checks the length first, fixed at 36, then accepts only the lowercase
+8-4-4-4-12 text `String` writes, of version 7 and RFC 9562 variant. The upper
+case, the braces, the `urn:uuid:` prefix and the undashed form the stdlib reads
+are refused, as are another version, another variant, the nil and the max UUID,
+and the zero `ID`'s own text. Every refusal is the one fixed `ErrMalformed`,
+carrying no part of what arrived.
+
+An `ID` field or map key encodes as the text `String` writes, and decodes from a
+JSON body or through `encoding.TextUnmarshaler` exactly as `Parse` reads it,
+not as the stdlib's `UUID.UnmarshalText`, which reads four forms in any case. A
+JSON null, a number, or the array of 16 numbers a bare `[16]byte` would take is
+refused under the same `ErrMalformed`, and a refusal leaves the field as it
+was. What `MarshalText` writes is always a text `Parse` accepts back, so the
+zero `ID`, or bytes of another version converted from a row, fail to marshal
+under `ErrMalformed` rather than write the nil UUID; `IsZero` lets a field
+tagged `omitzero` drop the zero `ID` instead.
+
+An id identifies a row and grants nothing: its random bits make it hard to
+guess, but it is no capability, and the service authorizes access to the row
+itself. It publishes its creation time to the millisecond to anyone who reads
+it; a service that must not say when an account or an order was created does
+not expose the id.
 
 ## crypto/password
 
