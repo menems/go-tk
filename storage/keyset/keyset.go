@@ -60,8 +60,9 @@ func New(size, largest int) (*Pager, error) {
 	if largest < 1 {
 		return nil, fmt.Errorf("keyset: largest page size %d is below 1", largest)
 	}
-	// A query asks for one row past the page: at math.MaxInt that limit
-	// wraps to a negative LIMIT, and Page would refuse every page.
+	// A query asks for one row past the page: a request whose size, its own or
+	// the default, is math.MaxInt wraps that limit to a negative LIMIT, and
+	// Page would refuse that page.
 	if largest == math.MaxInt {
 		return nil, fmt.Errorf("keyset: largest page size %d leaves no room for the row past the page", largest)
 	}
