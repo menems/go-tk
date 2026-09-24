@@ -500,6 +500,21 @@ runs in parallel.
 Error messages name the key and never the value, because a malformed
 `DATABASE_URL` carries a password and a boot error gets logged.
 
+`IntBetween` reads an integer the service bounds, both ends included:
+`env.IntBetween("WORK_SLOTS", 1, 64, 4)`. A value outside the bounds is a
+problem naming the key and the bounds, and the fallback is returned. `Int`
+keeps its signature: bounds are a second method, not a change every consumer
+already calling `Int` would have to absorb. Bounds with the lower end above the
+upper, or a fallback outside them, are the code's defect, not the operator's:
+the call records it whatever the environment holds and returns the lower bound
+without reading the key.
+
+`List` reads a comma-separated list, each element trimmed of the spaces around
+it: `env.List("ALLOWED_ORIGINS", nil)`. An empty or blank element (`a,,b`, a
+trailing comma, a value made only of spaces) is a problem naming the key and
+no element, since one of them may be an API key, and the fallback is returned.
+Dropping the element quietly would leave the operator believing it configured.
+
 Only a string can be `Required`. The values with no sensible default are DSNs,
 endpoints and secrets; a port or a timeout that reaches production unset wants
 a default, not a boot failure.

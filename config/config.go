@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -84,6 +85,62 @@ func (e *Env) Int(key string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+// IntBetween returns the value of key parsed as an integer from lo to hi, both
+// included, or fallback when it is unset or empty. A value that is set but
+// unparseable, beyond an int, or outside the bounds is a problem, and fallback
+// is returned.
+//
+// Bounds with lo above hi, or a fallback outside them, are a defect of the
+// code, not of the deployment: they are a problem at every call whatever the
+// environment holds, and the call returns lo without reading key. lo is the
+// one value that is inside the bounds whenever any is, and it does not depend
+// on the deployment; reversed bounds admit none, and Err is what stops a boot.
+func (e *Env) IntBetween(key string, lo, hi, fallback int) int {
+	if lo > hi {
+		e.fail(key, fmt.Sprintf("has bounds %d to %d in the code, which admit no value", lo, hi))
+		return lo
+	}
+	if fallback < lo || fallback > hi {
+		e.fail(key, fmt.Sprintf("has fallback %d in the code, outside its bounds %d to %d", fallback, lo, hi))
+		return lo
+	}
+
+	raw := e.getenv(key)
+	if raw == "" {
+		return fallback
+	}
+
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < lo || v > hi {
+		e.fail(key, fmt.Sprintf("is not an integer from %d to %d", lo, hi))
+		return fallback
+	}
+	return v
+}
+
+// List returns the value of key split on commas, each element trimmed of the
+// spaces around it, or fallback when it is unset or empty. A value made only of
+// spaces, or holding an empty or blank element (a,,b, a trailing comma), is a
+// problem, and fallback is returned: an element dropped quietly is an origin
+// or a key the operator believes is configured.
+func (e *Env) List(key string, fallback []string) []string {
+	raw := e.getenv(key)
+	if raw == "" {
+		return fallback
+	}
+
+	parts := strings.Split(raw, ",")
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			e.fail(key, "is not a comma-separated list without an empty element")
+			return fallback
+		}
+		parts[i] = p
+	}
+	return parts
 }
 
 // Duration returns the value of key parsed as a time.Duration, or fallback
