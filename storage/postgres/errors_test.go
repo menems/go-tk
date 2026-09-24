@@ -192,3 +192,69 @@ func TestClassifyAlreadyRead(t *testing.T) {
 		}
 	})
 }
+
+// sentValue stands for a value a statement sent, which a server field may quote.
+const sentValue = "ada@example.com"
+
+func TestClassifyFailureText(t *testing.T) {
+	t.Parallel()
+
+	refusal := &pgconn.PgError{
+		Severity:            "ERROR",
+		SeverityUnlocalized: "ERROR",
+		Code:                "22P02",
+		Message:             `invalid input syntax for type integer: "` + sentValue + `"`,
+		Detail:              "Value " + sentValue + ".",
+		Hint:                "Check " + sentValue + ".",
+		Where:               "column " + sentValue,
+		InternalQuery:       "select " + sentValue,
+		SchemaName:          sentValue,
+		TableName:           sentValue,
+		ColumnName:          sentValue,
+		DataTypeName:        sentValue,
+		ConstraintName:      sentValue,
+		File:                sentValue,
+		Routine:             sentValue,
+	}
+
+	tests := []struct {
+		name  string
+		cause error
+		want  string
+	}{
+		{name: "server refusal", cause: refusal, want: "pg: server error, SQLSTATE 22P02"},
+		{name: "server refusal wrapped", cause: fmt.Errorf("exec %s: %w", sentValue, refusal), want: "pg: server error, SQLSTATE 22P02"},
+		{name: "network failure", cause: errors.New("dial tcp 127.0.0.1:5432: connection refused"), want: "pg: dial tcp 127.0.0.1:5432: connection refused"},
+		{name: "context cancelled", cause: context.Canceled, want: "pg: context canceled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := postgres.Classify(tt.cause)
+
+			assertFailure(t, err)
+			if got := err.Error(); got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+			if !errors.Is(err, tt.cause) {
+				t.Errorf("errors.Is(%v, cause) = false, want true", err)
+			}
+		})
+	}
+
+	t.Run("server refusal reachable whole", func(t *testing.T) {
+		t.Parallel()
+
+		err := postgres.Classify(fmt.Errorf("exec: %w", refusal))
+
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) {
+			t.Fatalf("errors.As(%v, *pgconn.PgError) = false, want true", err)
+		}
+		if pgErr != refusal {
+			t.Errorf("errors.As yielded %+v, want the server's refusal %+v", pgErr, refusal)
+		}
+	})
+}

@@ -16,7 +16,7 @@ config/                  read configuration at boot
 sortid/                  mint ids that sort in creation order
 crypto/password/         hold a password, hash it and verify it behind a seam
 crypto/token/            issue an opaque bearer token, store a value that replays nothing
-storage/postgres/        a pgxpool.Pool from a DSN
+storage/postgres/        a bounded pgxpool.Pool, Classify and its sentinels
 storage/postgres/migrate embedded SQL migrations, applied out of band
 telemetry/otel/          OpenTelemetry providers
 telemetry/prometheus/    let Prometheus scrape them
@@ -804,9 +804,12 @@ driver's. Read errors inside the transaction callback and return what
 `Classify` gave you: it comes back unchanged through `BeginFunc`.
 
 A unique violation's message never carries the server's detail, which quotes
-the colliding row (an email, a username). `*Error`'s message repeats its
-cause's, which for some failures (an invalid input syntax) quotes a value the
-statement sent: bear it in mind before logging it.
+the colliding row (an email, a username). Nor does `*Error`'s, for a server
+refusal: it reads `pg: server error, SQLSTATE 22P02`, the code alone, since
+the server's message and detail can quote a value the statement sent (an
+invalid input syntax does). Any other cause, a network, context or pool
+failure, keeps its text after `pg: `. The full cause stays reachable through
+`errors.As` to `*pgconn.PgError`.
 
 ## storage/postgres/migrate
 

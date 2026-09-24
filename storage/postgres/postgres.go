@@ -1,7 +1,9 @@
-// Package pg opens a PostgreSQL connection pool from a DSN.
+// Package postgres opens a PostgreSQL connection pool from a DSN, with every
+// statement bounded by a server-side timeout, and reads the errors pgx returns
+// through Classify and its sentinels.
 //
 // New does not dial: pgxpool connects lazily on the first query. Whether the
-// database is reachable is a readiness question, answered by pkg/health, to
+// database is reachable is a readiness question, answered by health, to
 // which *pgxpool.Pool's Ping method can be handed directly.
 package postgres
 

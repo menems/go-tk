@@ -35,13 +35,22 @@ func (uniqueViolation) Is(target error) bool { return target == ErrUniqueViolati
 // row nor a unique violation. Err is the driver's error: errors.As to
 // *pgconn.PgError and errors.Is to a context error reach it through Unwrap.
 //
-// Its message repeats Err's, which for some failures (an invalid input
-// syntax) quotes a value the statement sent.
+// When Err's chain holds a *pgconn.PgError, the message is fixed and names
+// only its SQLSTATE: "pg: server error, SQLSTATE 22P02". The server's own
+// fields, and the text of whatever wraps them, are left out, since they can
+// quote a value the statement sent (an invalid input syntax does). Any other
+// cause, a network, context or pool failure, keeps its text: "pg: " + Err's.
 type Error struct {
 	Err error
 }
 
-func (e *Error) Error() string { return fmt.Sprintf("pg: %v", e.Err) }
+func (e *Error) Error() string {
+	var pgErr *pgconn.PgError
+	if errors.As(e.Err, &pgErr) {
+		return "pg: server error, SQLSTATE " + pgErr.Code
+	}
+	return fmt.Sprintf("pg: %v", e.Err)
+}
 
 func (e *Error) Unwrap() error { return e.Err }
 
