@@ -26,6 +26,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -50,10 +52,15 @@ func WithServiceVersion(version string) Option {
 }
 
 // WithOTLPEndpoint names the collector's base URL, such as
-// http://localhost:4318, that spans and metrics are pushed to. Empty installs
+// http://localhost:4318, that spans and metrics are pushed to: spans to its
+// path followed by /v1/traces, metrics to its path followed by /v1/metrics, so
+// http://gateway/otlp receives them on /otlp/v1/traces and /otlp/v1/metrics.
+// Empty installs
 // providers with no exporter, as omitting the option does, so the code under
 // them runs unchanged in a test or on a laptop, and a caller passes an
-// optional config value straight through.
+// optional config value straight through. Setup refuses a URL that is not an
+// absolute http or https URL with a host, or that carries a query, a fragment
+// or userinfo.
 func WithOTLPEndpoint(url string) Option {
 	return func(s *settings) { s.otlpEndpoint = url }
 }
@@ -86,8 +93,9 @@ type Providers struct {
 // first service boundary.
 //
 // serviceName labels every span and metric. Setup refuses it empty, since
-// telemetry that does not say which service produced it is not telemetry, and
-// refuses a nil reader passed to WithMetricReader.
+// telemetry that does not say which service produced it is not telemetry. It
+// refuses a nil reader passed to WithMetricReader, and a base URL passed to
+// WithOTLPEndpoint that no collector can be reached at.
 //
 // The caller shuts them down; a Setup that returned an error installed
 // nothing.
@@ -105,16 +113,26 @@ func Setup(ctx context.Context, serviceName string, opts ...Option) (*Providers,
 		}
 	}
 
+	var tracesURL, metricsURL string
+	if cfg.otlpEndpoint != "" {
+		base, err := parseBaseURL(cfg.otlpEndpoint)
+		if err != nil {
+			return nil, err
+		}
+		tracesURL = signalURL(base, "v1/traces")
+		metricsURL = signalURL(base, "v1/metrics")
+	}
+
 	res, err := newResource(cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	tracer, err := newTracerProvider(ctx, cfg, res)
+	tracer, err := newTracerProvider(ctx, tracesURL, res)
 	if err != nil {
 		return nil, err
 	}
-	meter, err := newMeterProvider(ctx, cfg, res)
+	meter, err := newMeterProvider(ctx, cfg, metricsURL, res)
 	if err != nil {
 		// The trace exporter opened a connection; drop it rather than
 		// leave it to the garbage collector.
@@ -152,6 +170,51 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// parseBaseURL refuses a base URL no collector can be reached at: one that is
+// not an absolute http or https URL with a host, or that carries what
+// signalURL would silently drop (a query, a fragment, userinfo).
+//
+// No error quotes the URL or any part of it but its scheme, since a password
+// may sit anywhere in it.
+func parseBaseURL(raw string) (*url.URL, error) {
+	base, err := url.Parse(raw)
+	if err != nil {
+		// url.Parse quotes what it could not read: the whole URL, an
+		// escape or a port, any of which may be part of a password.
+		return nil, errors.New("telemetry: otlp endpoint does not parse as a URL")
+	}
+	switch {
+	case base.Scheme == "":
+		return nil, errors.New("telemetry: otlp endpoint has no scheme, want http or https")
+	case base.Scheme != "http" && base.Scheme != "https":
+		return nil, fmt.Errorf("telemetry: otlp endpoint scheme %q is not http or https", base.Scheme)
+	case base.Hostname() == "":
+		return nil, errors.New("telemetry: otlp endpoint has no host")
+	case base.User != nil:
+		return nil, errors.New("telemetry: otlp endpoint carries userinfo")
+	case base.RawQuery != "" || base.ForceQuery:
+		return nil, errors.New("telemetry: otlp endpoint carries a query")
+	case strings.Contains(raw, "#"):
+		// url.Parse cuts the fragment at the first '#' and keeps no
+		// trace of an empty one.
+		return nil, errors.New("telemetry: otlp endpoint carries a fragment")
+	}
+	return base, nil
+}
+
+// signalURL appends a signal's OTLP path to the path of the base, as the OTLP
+// exporter specification does for its base endpoint. The exporters' own
+// WithEndpointURL takes a path literally, which would post every signal to the
+// base path itself. Only the scheme, host and path of the base reach it.
+func signalURL(base *url.URL, signalPath string) string {
+	u := url.URL{
+		Scheme: base.Scheme,
+		Host:   base.Host,
+		Path:   strings.TrimSuffix(base.Path, "/") + "/" + signalPath,
+	}
+	return u.String()
+}
+
 func newResource(cfg settings) (*resource.Resource, error) {
 	attrs := []attribute.KeyValue{semconv.ServiceName(cfg.serviceName)}
 	if cfg.serviceVersion != "" {
@@ -173,11 +236,13 @@ func newResource(cfg settings) (*resource.Resource, error) {
 	return res, nil
 }
 
-func newTracerProvider(ctx context.Context, cfg settings, res *resource.Resource) (*sdktrace.TracerProvider, error) {
+// newTracerProvider pushes to endpointURL, the signal's full URL, or nowhere
+// when it is empty.
+func newTracerProvider(ctx context.Context, endpointURL string, res *resource.Resource) (*sdktrace.TracerProvider, error) {
 	opts := []sdktrace.TracerProviderOption{sdktrace.WithResource(res)}
 
-	if cfg.otlpEndpoint != "" {
-		exp, err := otlptrace.New(ctx, otlptrace.WithEndpointURL(cfg.otlpEndpoint))
+	if endpointURL != "" {
+		exp, err := otlptrace.New(ctx, otlptrace.WithEndpointURL(endpointURL))
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 		}
@@ -187,11 +252,13 @@ func newTracerProvider(ctx context.Context, cfg settings, res *resource.Resource
 	return sdktrace.NewTracerProvider(opts...), nil
 }
 
-func newMeterProvider(ctx context.Context, cfg settings, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
+// newMeterProvider pushes to endpointURL, the signal's full URL, or nowhere
+// when it is empty, on top of the readers cfg names.
+func newMeterProvider(ctx context.Context, cfg settings, endpointURL string, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
 	opts := []sdkmetric.Option{sdkmetric.WithResource(res)}
 
-	if cfg.otlpEndpoint != "" {
-		exp, err := otlpmetric.New(ctx, otlpmetric.WithEndpointURL(cfg.otlpEndpoint))
+	if endpointURL != "" {
+		exp, err := otlpmetric.New(ctx, otlpmetric.WithEndpointURL(endpointURL))
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: metric exporter: %w", err)
 		}

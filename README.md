@@ -976,7 +976,9 @@ Without it a trace stops at the first service boundary, and a test pins it.
 
 `WithOTLPEndpoint("")`, like no `WithOTLPEndpoint` at all, installs providers
 with no exporter, so the instrumented code runs unchanged on a laptop and in a
-test.
+test. Any other value must be an absolute `http` or `https` URL with a host
+and no query, fragment or userinfo: `Setup` refuses the rest at boot, and its
+error never quotes a password the URL carries.
 
 Shutdown is deliberately **not** an `app.Runner`. Telemetry has to outlive the
 servers it observes or their last spans never leave the process, and an

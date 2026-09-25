@@ -2,7 +2,11 @@ package otel_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -149,6 +153,207 @@ func TestSetupInstallsThePropagator(t *testing.T) {
 
 	if got := carrier.Get("traceparent"); !strings.Contains(got, traceID.String()) {
 		t.Errorf("traceparent = %q, want it to carry %s", got, traceID)
+	}
+}
+
+// TestSetupPushesEachSignalToItsOwnPath pins that the endpoint is a base URL:
+// each signal goes to its OTLP path appended to whatever path the base
+// carries, and nothing goes anywhere else.
+func TestSetupPushesEachSignalToItsOwnPath(t *testing.T) {
+	clearOTLPEnv(t)
+
+	tests := []struct {
+		name string
+		base string
+		want []string
+	}{
+		{name: "bare host", base: "", want: []string{"/v1/metrics", "/v1/traces"}},
+		{name: "base path", base: "/otlp", want: []string{"/otlp/v1/metrics", "/otlp/v1/traces"}},
+		{name: "base path with trailing slash", base: "/otlp/", want: []string{"/otlp/v1/metrics", "/otlp/v1/traces"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			receiver := newPathRecorder(t)
+
+			p, err := otel.Setup(context.Background(), "svc", otel.WithOTLPEndpoint(receiver.url+tt.base))
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+
+			_, span := p.Tracer.Tracer("test").Start(context.Background(), "op")
+			span.End()
+			counter, err := p.Meter.Meter("test").Int64Counter("requests")
+			if err != nil {
+				t.Fatalf("Int64Counter: %v", err)
+			}
+			counter.Add(context.Background(), 1)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := p.Shutdown(ctx); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+
+			if got := receiver.paths(); !slices.Equal(got, tt.want) {
+				t.Errorf("receiver got requests on %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSetupKeepsAPasswordOutOfAParseError pins that a base URL that does not
+// parse is refused at boot without quoting what it carries.
+func TestSetupKeepsAPasswordOutOfAParseError(t *testing.T) {
+	_, err := otel.Setup(context.Background(), "svc", otel.WithOTLPEndpoint("http://user:hunter2@collector:port"))
+	if err == nil {
+		t.Fatal("expected an error for an unparsable endpoint, got nil")
+	}
+	if strings.Contains(err.Error(), "hunter2") {
+		t.Errorf("error = %q, want it free of the password", err)
+	}
+}
+
+// TestSetupRefusesABaseURLNoCollectorIsReachedAt pins that a base URL a
+// signal's URL could not be built from is refused at boot, naming what is
+// wrong, and that the refused Setup leaves the globals as it found them.
+func TestSetupRefusesABaseURLNoCollectorIsReachedAt(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{name: "no scheme", endpoint: "collector:4318/otlp", want: "scheme"},
+		{name: "no scheme nor host", endpoint: "/otlp", want: "scheme"},
+		{name: "scheme other than http or https", endpoint: "grpc://collector:4317", want: "scheme"},
+		{name: "no host", endpoint: "http:///otlp", want: "host"},
+		{name: "port without a host", endpoint: "http://:4318", want: "host"},
+		{name: "query", endpoint: "http://collector:4318/otlp?tenant=a", want: "query"},
+		{name: "empty query", endpoint: "http://collector:4318/otlp?", want: "query"},
+		{name: "fragment", endpoint: "http://collector:4318/otlp#top", want: "fragment"},
+		{name: "empty fragment", endpoint: "http://collector:4318/otlp#", want: "fragment"},
+		{name: "userinfo", endpoint: "http://user@collector:4318", want: "userinfo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			untouched := installSentinelGlobals(t)
+
+			_, err := otel.Setup(context.Background(), "svc", otel.WithOTLPEndpoint(tt.endpoint))
+			if err == nil {
+				t.Fatalf("expected an error for %q, got nil", tt.endpoint)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to name the %s", err, tt.want)
+			}
+			untouched(t)
+		})
+	}
+}
+
+// TestSetupKeepsAPasswordOutOfItsError pins that no error Setup returns for
+// a base URL quotes the password it carries, whether the URL parses or not.
+func TestSetupKeepsAPasswordOutOfItsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		password string
+	}{
+		{name: "userinfo refused", endpoint: "http://user:hunter2@collector:4318", password: "hunter2"},
+		{name: "password with a slash", endpoint: "http://user:hunt/er2@collector:4318", password: "hunt"},
+		{name: "password with a bad escape", endpoint: "http://user:hu%zznter2@collector:4318", password: "%zz"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			untouched := installSentinelGlobals(t)
+
+			_, err := otel.Setup(context.Background(), "svc", otel.WithOTLPEndpoint(tt.endpoint))
+			if err == nil {
+				t.Fatalf("expected an error for an endpoint carrying a password, got nil")
+			}
+			if strings.Contains(err.Error(), tt.password) {
+				t.Errorf("error = %q, want it free of %q", err, tt.password)
+			}
+			untouched(t)
+		})
+	}
+}
+
+// installSentinelGlobals sets providers and a propagator of its own as the
+// OpenTelemetry globals and returns a check that they are still the globals.
+func installSentinelGlobals(t *testing.T) func(*testing.T) {
+	t.Helper()
+
+	tracer := sdktrace.NewTracerProvider()
+	meter := sdkmetric.NewMeterProvider()
+	t.Cleanup(func() {
+		_ = tracer.Shutdown(context.Background())
+		_ = meter.Shutdown(context.Background())
+	})
+	otelapi.SetTracerProvider(tracer)
+	otelapi.SetMeterProvider(meter)
+	otelapi.SetTextMapPropagator(propagation.Baggage{})
+
+	return func(t *testing.T) {
+		t.Helper()
+
+		if otelapi.GetTracerProvider() != trace.TracerProvider(tracer) {
+			t.Error("a refused Setup replaced the global tracer provider")
+		}
+		if otelapi.GetMeterProvider() != metric.MeterProvider(meter) {
+			t.Error("a refused Setup replaced the global meter provider")
+		}
+		if otelapi.GetTextMapPropagator() != propagation.TextMapPropagator(propagation.Baggage{}) {
+			t.Error("a refused Setup replaced the global propagator")
+		}
+	}
+}
+
+// pathRecorder is a local OTLP receiver that accepts every request and
+// records the path it came to.
+type pathRecorder struct {
+	url string
+
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+func newPathRecorder(t *testing.T) *pathRecorder {
+	t.Helper()
+
+	r := &pathRecorder{seen: map[string]bool{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		r.mu.Lock()
+		r.seen[req.URL.Path] = true
+		r.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	r.url = srv.URL
+	return r
+}
+
+// paths returns the distinct paths requested, sorted.
+func (r *pathRecorder) paths() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var got []string
+	for path := range r.seen {
+		got = append(got, path)
+	}
+	slices.Sort(got)
+	return got
+}
+
+// clearOTLPEnv blanks the variables the OTLP exporters read, which the
+// exporters treat as unset, so a collector configured on the machine running
+// the tests cannot redirect or reshape what they send.
+func clearOTLPEnv(t *testing.T) {
+	t.Helper()
+
+	for _, signal := range []string{"", "TRACES_", "METRICS_"} {
+		for _, key := range []string{"ENDPOINT", "HEADERS", "COMPRESSION", "TIMEOUT", "INSECURE", "CERTIFICATE", "CLIENT_CERTIFICATE", "CLIENT_KEY"} {
+			t.Setenv("OTEL_EXPORTER_OTLP_"+signal+key, "")
+		}
 	}
 }
 
