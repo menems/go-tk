@@ -26,6 +26,9 @@
 // is the counter for a service metering inside one process: a ceiling of calls
 // per caller inside a window, held in the memory of that process alone.
 //
+// Each of those three is a Middleware, and Chain composes the ones a route
+// carries into the one wrap set on its handler, the first listed outermost.
+//
 // GrantOrigins names, in one value, the policy a browser meets, and that value
 // has two halves: Grant.Wrap sits in front of the table, answers nothing of its
 // own and adds the grant to whatever was answered, a refusal included, while

@@ -81,7 +81,7 @@ type Resolver[T any] func(ctx context.Context, token string) (T, error)
 // finding none has to treat that as unauthenticated. It is also what keeps a
 // request no route matched away from resolve: the table answers its 404 and
 // its 405 first, so enumerating paths and methods stays anonymous.
-func RequireBearer[T any](key *authctx.Key[T], resolve Resolver[T]) func(http.Handler) http.Handler {
+func RequireBearer[T any](key *authctx.Key[T], resolve Resolver[T]) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token, ok := authctx.Bearer(r.Header)

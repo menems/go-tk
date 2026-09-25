@@ -78,7 +78,7 @@ type Holds[T, R any] func(ctx context.Context, principal T, right R) (bool, erro
 // authenticated, and coverage is exactly the set of handlers wrapped: a route
 // wrapped for no right demands none. A route named for GET is reached by HEAD
 // too, and the wrap sitting on the handler, that HEAD is checked like the GET.
-func RequireRight[T, R any](key *authctx.Key[T], right R, holds Holds[T, R]) func(http.Handler) http.Handler {
+func RequireRight[T, R any](key *authctx.Key[T], right R, holds Holds[T, R]) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			principal, ok := key.From(r.Context())

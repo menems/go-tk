@@ -217,10 +217,25 @@ holds it; the wrap sits on the handler, inside the bearer wrap.
 ```go
 listing := httpd.RequireRight(userID, scopeList, allowed) // allowed is yours
 h, err := httpd.NewRouter(
-    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: auth(listing(list))},
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: httpd.Chain(auth, listing)(list)},
     httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: auth(status)},
 )
 ```
+
+`Chain` composes the wraps a route carries, once, into the one wrap set on its
+handler. The first listed is the outermost: a request meets the wraps in the
+order they are written, and the handler last. Each wrap here is an
+`httpd.Middleware`, which is `func(http.Handler) http.Handler` under a name, so
+a service's own wraps join a chain as they are. A chain of no wrap serves the
+handler as it is, and a nil wrap panics at wiring rather than on the first
+request.
+
+A chain covers nothing by itself: coverage is still exactly the set of handlers
+it is set on, and the table's `404`, `405` and preflight still answer before
+any of it runs. That is why it sits on a handler and not in front of the table,
+where it would ask a resolver about a path nobody named. The order is the
+service's, and a chain naming the right before the bearer meets the `500
+auth_unavailable` below on every request rather than serving one.
 
 The right is the service's own type, and this package never reads it: it holds
 no right table and grants nothing, so a check that answers wrongly authorizes
@@ -256,8 +271,9 @@ taking one call from its budget.
 
 ```go
 meter := httpd.LimitRate(callerOf, count) // both are yours
+metered := httpd.Chain(auth, meter)
 h, err := httpd.NewRouter(
-    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: auth(meter(list))},
+    httpd.Route{Method: http.MethodGet, Pattern: "/things", Handler: metered(list)},
     httpd.Route{Method: http.MethodGet, Pattern: "/status", Handler: auth(status)},
 )
 ```

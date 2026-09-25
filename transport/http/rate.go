@@ -104,7 +104,7 @@ type Counter[K any] func(ctx context.Context, key K) (bool, time.Duration, error
 // a handler runs. A service whose key is readable from the request alone can
 // place it outside the bearer wrap instead, the one position where a flood of
 // unresolvable tokens is metered before the resolver is asked.
-func LimitRate[K any](caller CallerKey[K], count Counter[K]) func(http.Handler) http.Handler {
+func LimitRate[K any](caller CallerKey[K], count Counter[K]) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key, ok := caller(r)
