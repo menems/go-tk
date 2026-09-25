@@ -14,3 +14,5 @@
 - env-values [core] feat | intégrateur @ API Go | un service lit un entier borné et une liste séparée par des virgules dans l'environnement, chaque valeur malformée nommée par sa clé au démarrage
 - sql-failures [storage] feat | intégrateur @ API Go | un service lit une collision d'index unique et une ligne absente comme des issues à lui, toute autre panne du driver arrivant sous un seul type portant sa cause, chaque instruction bornée par un délai
 - keyset-pages [storage] feat | intégrateur @ API Go | un service sert une liste page par page, la plus récente d'abord, en repartant du curseur où la page précédente s'est arrêtée, taille et curseur refusés à la frontière
+- trace-log [telemetry] feat | intégrateur @ API Go | un service retrouve dans chaque ligne de log la trace et le span de la requête qui l'a émise, et renvoie l'identifiant de trace dans la réponse, sans qu'un handler l'écrive lui-même
+- access-log [transport] feat | intégrateur @ API Go | un service écrit une ligne par requête servie, méthode, route, statut et durée, portant sa trace, sans qu'un handler l'écrive lui-même | after: trace-log
